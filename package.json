@@ -15,6 +15,7 @@
     "native"
   ],
   "scripts": {
+    "postinstall": "node scripts/setup-native.mjs",
     "build:native": "powershell -ExecutionPolicy Bypass -File scripts/build-native.ps1",
     "typecheck": "tsc --noEmit",
     "test:native": "cargo test --manifest-path native/Cargo.toml --release"

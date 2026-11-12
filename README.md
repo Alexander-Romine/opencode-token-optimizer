@@ -54,8 +54,7 @@ The installer backs up any existing `opencode.json` before merging - it never ov
 **Manual install:**
 
 ```powershell
-npm install
-npm run build:native     # optional - skips to JS fallback if no Rust
+npm install               # postinstall builds the addon, or copies the prebuilt, or falls back to JS
 ```
 
 Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), pointing `package` at this folder:
@@ -82,12 +81,12 @@ Restart OpenCode, then run **`/tokens`** in the TUI for the efficiency report an
 Requires Node.js 18+; Rust for the native addon.
 
 ```sh
-npm install
+npm install               # also runs scripts/setup-native.mjs (build or prebuilt)
 npm run typecheck
-npm run build:native     # cargo build --release + install .node
-npm run test:native      # 8 Rust unit tests
-node test/smoke.mjs      # native load + Rust/JS byte-for-byte agreement
-node benchmark/bench.mjs # reproduce the numbers below
+npm run build:native      # explicit rebuild of the Rust addon
+npm run test:native       # 8 Rust unit tests
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement
+node benchmark/bench.mjs  # reproduce the numbers below
 ```
 
 ## Performance

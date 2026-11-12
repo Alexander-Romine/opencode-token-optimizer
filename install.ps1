@@ -87,8 +87,14 @@ if ($cargo) {
 Step "Installing npm dependencies"
 Push-Location $repo
 try {
+    # -SkipNative must reach postinstall, otherwise it would build anyway.
+    $prevSkip = $env:TOKEN_OPTIMIZER_SKIP_NATIVE
+    if ($SkipNative) { $env:TOKEN_OPTIMIZER_SKIP_NATIVE = "1" }
     & npm install --no-fund --no-audit
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE" }
+    $npmExit = $LASTEXITCODE
+    if ($null -eq $prevSkip) { Remove-Item Env:TOKEN_OPTIMIZER_SKIP_NATIVE -ErrorAction SilentlyContinue }
+    else { $env:TOKEN_OPTIMIZER_SKIP_NATIVE = $prevSkip }
+    if ($npmExit -ne 0) { throw "npm install failed with exit code $npmExit" }
     Ok "dependencies ready"
 } finally {
     Pop-Location
