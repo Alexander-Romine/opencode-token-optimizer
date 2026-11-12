@@ -1,0 +1,26 @@
+[package]
+name = "token-optimizer-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native hot path for the OpenCode token-optimizer plugin"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Deliberately minimal: napi + napi-derive only. No regex, no serde, no chrono.
+# Everything else is hand-rolled to keep the binary small and avoid pulling
+# allocation-heavy machinery into the host process.
+[dependencies]
+napi = "2"
+napi-derive = "2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# Keep unwinding (NOT "abort"): napi-rs catches panics and turns them into JS
+# exceptions. abort would take the whole OpenCode server down with it.
+panic = "unwind"
+overflow-checks = false

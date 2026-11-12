@@ -1,0 +1,194 @@
+/**
+ * Plugin options, read from the `options` object of the plugin's entry in
+ * `opencode.json`.
+ *
+ * Every field is optional and every reader is tolerant: unknown shapes, snake
+ * case aliases and wrong types all fall back to the default rather than
+ * throwing during plugin setup.
+ */
+
+export interface RotationOptions {
+  /** Create a new session automatically when the context passes the threshold. */
+  auto: boolean
+  /** Percentage of the model context window that triggers rotation. */
+  thresholdPct: number
+  /** Appended to the rotated session's title. */
+  titleSuffix: string
+}
+
+export interface ToolOptions {
+  /** Result budget in characters; 0 disables truncation. */
+  maxChars: number
+  headPct: number
+  stripAnsi: boolean
+  collapseBlank: boolean
+  maxBlankLines: number
+  trimLines: boolean
+  marker?: string
+  /** Only collapse a repeat when the previous result is within this many tool calls. */
+  dedupeWindow: number
+  /** Never dedupe results smaller than this many characters. */
+  dedupeMinChars: number
+  /** Tool names the compressor leaves untouched. */
+  exclude: string[]
+}
+
+export interface RoutingOptions {
+  /** `provider/model` used for title generation. */
+  title?: string
+  /** `provider/model` used for compaction summaries. */
+  compaction?: string
+  /** `provider/model` used for transient one-shot generations. */
+  generate?: string
+  /** `provider/model` per agent id, applied when no kind rule matched. */
+  agents: Record<string, string>
+}
+
+export interface Options {
+  enabled: boolean
+  /** Characters per token used by the estimator. 4 is the usual prose/code blend. */
+  charsPerToken: number
+  rotation: RotationOptions
+  tool: ToolOptions
+  routing: RoutingOptions
+  /** Output-token cap applied to every agent-loop request. 0 leaves it alone. */
+  budgetMaxTokens: number
+  /** Directory, relative to the project root, that holds state files. */
+  stateDir: string
+  /** How often dirty metrics are flushed to plugin storage. */
+  flushMs: number
+  /** Maximum sessions tracked in memory before the oldest is evicted. */
+  maxTrackedSessions: number
+}
+
+const DEFAULT: Options = {
+  enabled: true,
+  charsPerToken: 4,
+  rotation: {
+    auto: false,
+    thresholdPct: 85,
+    titleSuffix: " (rotated)",
+  },
+  tool: {
+    maxChars: 24_000,
+    headPct: 70,
+    stripAnsi: true,
+    collapseBlank: true,
+    maxBlankLines: 1,
+    trimLines: false,
+    dedupeWindow: 4,
+    dedupeMinChars: 1_500,
+    exclude: ["write", "edit", "apply_patch"],
+  },
+  routing: { agents: {} },
+  budgetMaxTokens: 0,
+  stateDir: ".opencode/token-optimizer/state",
+  flushMs: 4_000,
+  maxTrackedSessions: 200,
+}
+
+type Raw = Record<string, unknown>
+
+function object(value: unknown): Raw | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Raw) : undefined
+}
+
+/** Reads `a.b` or `a_b` so hand-written config in either style works. */
+function read(source: Raw, key: string, alias?: string): unknown {
+  if (key in source) return source[key]
+  if (alias && alias in source) return source[alias]
+  return undefined
+}
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
+function num(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function stringList(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback
+  return value.filter((entry): entry is string => typeof entry === "string")
+}
+
+export function parseOptions(raw: unknown): Options {
+  const root = object(raw)
+  if (!root) return { ...DEFAULT, rotation: { ...DEFAULT.rotation }, tool: { ...DEFAULT.tool }, routing: { agents: {} } }
+
+  const rotationRaw = object(read(root, "rotation", "session")) ?? {}
+  const toolRaw = object(read(root, "tool", "tools")) ?? {}
+  const routingRaw = object(read(root, "routing", "model")) ?? {}
+  const stateRaw = object(read(root, "state")) ?? {}
+
+  const agentsRaw = object(read(routingRaw, "agents")) ?? {}
+
+  const rotation: RotationOptions = {
+    auto: bool(read(rotationRaw, "auto"), DEFAULT.rotation.auto),
+    thresholdPct: clamp(num(read(rotationRaw, "thresholdPct", "threshold_pct"), DEFAULT.rotation.thresholdPct), 20, 99),
+    titleSuffix: str(read(rotationRaw, "titleSuffix", "title_suffix")) ?? DEFAULT.rotation.titleSuffix,
+  }
+
+  const tool: ToolOptions = {
+    maxChars: Math.max(0, num(read(toolRaw, "maxChars", "max_chars"), DEFAULT.tool.maxChars)),
+    headPct: clamp(num(read(toolRaw, "headPct", "head_pct"), DEFAULT.tool.headPct), 0, 100),
+    stripAnsi: bool(read(toolRaw, "stripAnsi", "strip_ansi"), DEFAULT.tool.stripAnsi),
+    collapseBlank: bool(read(toolRaw, "collapseBlank", "collapse_blank"), DEFAULT.tool.collapseBlank),
+    maxBlankLines: Math.max(0, num(read(toolRaw, "maxBlankLines", "max_blank_lines"), DEFAULT.tool.maxBlankLines)),
+    trimLines: bool(read(toolRaw, "trimLines", "trim_lines"), DEFAULT.tool.trimLines),
+    marker: str(read(toolRaw, "marker")),
+    dedupeWindow: clamp(num(read(toolRaw, "dedupeWindow", "dedupe_window"), DEFAULT.tool.dedupeWindow), 0, 64),
+    dedupeMinChars: Math.max(0, num(read(toolRaw, "dedupeMinChars", "dedupe_min_chars"), DEFAULT.tool.dedupeMinChars)),
+    exclude: stringList(read(toolRaw, "exclude"), DEFAULT.tool.exclude),
+  }
+
+  const agents: Record<string, string> = {}
+  for (const [agentID, target] of Object.entries(agentsRaw)) {
+    const parsed = str(target)
+    if (parsed) agents[agentID] = parsed
+  }
+
+  const routing: RoutingOptions = {
+    title: str(read(routingRaw, "title")),
+    compaction: str(read(routingRaw, "compaction")),
+    generate: str(read(routingRaw, "generate")),
+    agents,
+  }
+
+  return {
+    enabled: bool(read(root, "enabled"), DEFAULT.enabled),
+    charsPerToken: clamp(num(read(root, "charsPerToken", "chars_per_token"), DEFAULT.charsPerToken), 1, 20),
+    rotation,
+    tool,
+    routing,
+    budgetMaxTokens: Math.max(0, num(read(root, "budgetMaxTokens", "budget_max_tokens"), DEFAULT.budgetMaxTokens)),
+    stateDir: str(read(stateRaw, "dir", "directory")) ?? DEFAULT.stateDir,
+    flushMs: clamp(num(read(root, "flushMs", "flush_ms"), DEFAULT.flushMs), 250, 300_000),
+    maxTrackedSessions: clamp(
+      num(read(root, "maxTrackedSessions", "max_tracked_sessions"), DEFAULT.maxTrackedSessions),
+      1,
+      10_000,
+    ),
+  }
+}
+
+export function compressOptions(tool: ToolOptions) {
+  return {
+    maxChars: tool.maxChars,
+    headPct: tool.headPct,
+    stripAnsi: tool.stripAnsi,
+    collapseBlank: tool.collapseBlank,
+    maxBlankLines: tool.maxBlankLines,
+    trimLines: tool.trimLines,
+    ...(tool.marker === undefined ? {} : { marker: tool.marker }),
+  }
+}

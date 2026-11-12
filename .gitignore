@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Rust build output (target dir is redirected by scripts/build-native.ps1,
+# but a local `cargo build` without it lands here)
+native/target/
+*.pdb
+
+# Built addon - rebuild with `npm run build:native`.
+# The distributable copy lives in prebuilt/win32-x64/ and IS committed.
+native/*.node
+
+# Installer config backups
+opencode.json.bak-*
+opencode.jsonc.bak-*
+
+# Local OpenCode state (created at runtime)
+.opencode/
+
+# OS noise
+Thumbs.db
+.DS_Store

@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest # matches the shipped prebuilt (win32-x64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-fund --no-audit
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Rust tests
+        run: cargo test --release --manifest-path native/Cargo.toml
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+
+      - name: Build native addon
+        run: powershell -ExecutionPolicy Bypass -File scripts/build-native.ps1
+        env:
+          TOKEN_OPTIMIZER_TARGET: ${{ runner.temp }}/cargo-target
+
+      - name: Smoke test (native load + Rust/JS agreement)
+        run: node test/smoke.mjs
+
+      - name: Benchmark (prints numbers, fails on error)
+        run: node benchmark/bench.mjs
