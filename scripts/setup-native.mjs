@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 /**
- * Ensures native/token-optimizer.node exists. Runs as `postinstall`, so a plain
- * `npm install` is enough to set the plugin up. Never fails the install:
+ * Ensures native/token-optimizer.node and dist/gui-experimental.cjs exist.
+ * Runs as `postinstall`, so a plain `npm install` is enough to set the plugin
+ * up. Never fails the install:
  *
+ * Native addon:
  *   1. addon already built        -> done
  *   2. cargo runnable             -> build from source (scripts/build-native.ps1
  *                                    on Windows, cargo + copy elsewhere)
  *   3. prebuilt for this platform -> copy from prebuilt/<platform>-<arch>/
  *   4. otherwise                  -> warn; the plugin runs on the JS fallback
  *
- * Set TOKEN_OPTIMIZER_SKIP_NATIVE=1 to skip (used by install.ps1 -SkipNative).
+ * GUI bundle (Desktop `/tokens`):
+ *   1. bundle already built       -> done
+ *   2. vite available             -> `vite build`
+ *   3. otherwise                  -> warn; TUI `/tokens` still works
+ *
+ * Set TOKEN_OPTIMIZER_SKIP_NATIVE=1 to skip the native step (install.ps1
+ * -SkipNative). TOKEN_OPTIMIZER_SKIP_GUI=1 skips the GUI bundle step.
  */
 import { spawnSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync } from "node:fs"
@@ -18,6 +26,7 @@ import { fileURLToPath } from "node:url"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const addon = path.join(root, "native", "token-optimizer.node")
+const guiBundle = path.join(root, "dist", "gui-experimental.cjs")
 
 const say = (msg) => console.log(`[token-optimizer] ${msg}`)
 
@@ -68,25 +77,54 @@ function copyPrebuilt() {
   return true
 }
 
-try {
+function setupNative() {
   if (process.env.TOKEN_OPTIMIZER_SKIP_NATIVE === "1") {
     say("native setup skipped (TOKEN_OPTIMIZER_SKIP_NATIVE=1)")
-    process.exit(0)
+    return
   }
   if (existsSync(addon)) {
     say("native addon already present")
-    process.exit(0)
+    return
   }
   if (cargoWorks() && buildFromSource()) {
     say("native addon built from source")
-    process.exit(0)
+    return
   }
-  if (copyPrebuilt()) process.exit(0)
+  if (copyPrebuilt()) return
 
   say("WARNING: no Rust toolchain and no prebuilt for this platform -")
   say("         the plugin will run on the JS fallback (same results, ~3x slower).")
-  process.exit(0) // never break `npm install` over this
+}
+
+function setupGui() {
+  if (process.env.TOKEN_OPTIMIZER_SKIP_GUI === "1") {
+    say("GUI bundle step skipped (TOKEN_OPTIMIZER_SKIP_GUI=1)")
+    return
+  }
+  if (existsSync(guiBundle)) {
+    say("GUI bundle already present")
+    return
+  }
+  // vite is a devDependency; only present in a dev clone, not a prod install.
+  const viteBin = path.join(root, "node_modules", ".bin", process.platform === "win32" ? "vite.cmd" : "vite")
+  if (!existsSync(viteBin)) {
+    say("WARNING: GUI bundle missing and vite not installed -")
+    say("         Desktop /tokens will be unavailable (TUI /tokens still works).")
+    say("         Run `npm install --include=dev` then `npm run build:gui` to fix.")
+    return
+  }
+  const run = spawnSync(viteBin, ["build"], { cwd: root, stdio: "inherit", windowsHide: true })
+  if (run.status === 0 && existsSync(guiBundle)) {
+    say("GUI bundle built")
+  } else {
+    say("WARNING: GUI bundle build failed - Desktop /tokens will be unavailable.")
+  }
+}
+
+try {
+  setupNative()
+  setupGui()
 } catch (error) {
-  say(`WARNING: native setup failed (${error.message}) - using the JS fallback.`)
-  process.exit(0)
+  say(`WARNING: setup failed (${error.message}) - the plugin still loads.`)
+  process.exit(0) // never break `npm install` over this
 }

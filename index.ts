@@ -9,7 +9,11 @@
  *    values, not to the number of bytes, so a 200k-token request costs well
  *    under a millisecond.
  *  * **Tool optimization** (`execute.after`) - dedupe, clean, truncate tool
- *    results. This is where most tokens actually go.
+ *    results. This is where most tokens actually go. RTK-style rules also
+ *    recognise common shell commands (test runners, git, installs) and keep
+ *    only their signal - summaries, failures, errors.
+ *  * **Caveman** (`context`)          - optional system-prompt instruction
+ *    that strips filler from prose while keeping code and errors verbatim.
  *  * **State + rotation**           - durable state file per session, and
  *    `/rotate` to start a fresh session seeded from it. Auto-rotation kicks
  *    in at `rotation.thresholdPct` of the context window (on by default;
@@ -203,9 +207,30 @@ export default Plugin.define({
      * Hooks
      * ---------------------------------------------------------------- */
 
+    /* ---------------------------------------------------------------- *
+     * Caveman: terseness instruction appended to the system prompt
+     * ---------------------------------------------------------------- */
+
+    const cavemanText =
+      options.caveman.text.trim() ||
+      "Communication style: caveman. Drop articles, filler, pleasantries, hedges " +
+        "and restating the question; short sentences; answer first, details after. " +
+        "Keep technical terms, identifiers, file paths, code, commands and error " +
+        "messages exact and complete - never paraphrase code, diffs or quoted " +
+        "output. Do not narrate what you are about to do; do it."
+
+    function applyCaveman(system: Array<{ type: string; text: string }>): void {
+      if (!options.caveman.enabled) return
+      // Idempotent: the plugin can be registered twice (global + project
+      // config) and one request must not collect two copies.
+      if (system.some((part) => part.type === "text" && part.text === cavemanText)) return
+      system.push({ type: "text", text: cavemanText } as { type: string; text: string })
+    }
+
     if (options.budgetMaxTokens > 0 || options.rotation.auto) {
       registrations.push(
         await ctx.session.hook("context", (event) => {
+          applyCaveman(event.system)
           const chars = estimateChars(event.system, event.messages, event.tools)
           meter.noteContext(event.sessionID, chars)
 
@@ -217,6 +242,7 @@ export default Plugin.define({
       // Metering is still worth having even when neither feature is on.
       registrations.push(
         await ctx.session.hook("context", (event) => {
+          applyCaveman(event.system)
           meter.noteContext(
             event.sessionID,
             estimateChars(event.system, event.messages, event.tools),
@@ -278,8 +304,15 @@ export default Plugin.define({
       await ctx.tool.hook("execute.after", (event) => {
         if (event.status !== "completed") return
         const sessionID = String((event as { sessionID?: unknown }).sessionID ?? "")
+        // Shell-like tools carry their command in input; RTK needs it to pick
+        // the right reduction rule. Anything without one passes through.
+        const toolInput = (event as { input?: unknown }).input
+        const command =
+          toolInput && typeof toolInput === "object" && typeof (toolInput as { command?: unknown }).command === "string"
+            ? (toolInput as { command: string }).command
+            : undefined
         try {
-          const outcome = optimizer.optimize(sessionID, event.tool, (event as { result?: unknown }).result)
+          const outcome = optimizer.optimize(sessionID, event.tool, (event as { result?: unknown }).result, command)
           if (!outcome) return
           meter.noteTool(
             sessionID,

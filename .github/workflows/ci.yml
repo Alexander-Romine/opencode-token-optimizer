@@ -21,6 +21,9 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
+      - name: Build GUI bundle (Desktop /tokens)
+        run: npm run build:gui
+
       - name: Rust tests
         run: cargo test --release --manifest-path native/Cargo.toml
         env:
@@ -31,7 +34,7 @@ jobs:
         env:
           TOKEN_OPTIMIZER_TARGET: ${{ runner.temp }}/cargo-target
 
-      - name: Smoke test (native load + Rust/JS agreement)
+      - name: Smoke test (native load + Rust/JS agreement + RTK)
         run: node test/smoke.mjs
 
       - name: Benchmark (prints numbers, fails on error)

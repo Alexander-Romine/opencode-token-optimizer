@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>token-optimizer · installer</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3;
+    --dim: #8b949e; --accent: #58a6ff; --green: #3fb950; --yellow: #d29922;
+    --red: #f85149; --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 32px 16px 64px;
+  }
+  main { max-width: 780px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 28px; }
+  header h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.5px; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--dim); font-size: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 15px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--dim); }
+  .card h2 small { text-transform: none; letter-spacing: 0; font-weight: normal; }
+  .row {
+    display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px;
+    border: 1px solid transparent; border-radius: 8px; cursor: pointer;
+  }
+  .row:hover { background: #1c2128; border-color: var(--border); }
+  .row input { margin-top: 4px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; cursor: pointer; }
+  .row-main { flex: 1; }
+  .row-main strong { display: block; font-size: 14.5px; }
+  .row-main .desc { display: block; color: var(--dim); font-size: 13px; margin-top: 2px; }
+  .badge {
+    flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--dim); white-space: nowrap; margin-top: 3px;
+  }
+  .badge.on { color: var(--green); border-color: var(--green); }
+  .badge.warn { color: var(--yellow); border-color: var(--yellow); }
+  .scope { display: flex; flex-direction: column; gap: 8px; }
+  .scope label { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+  .scope label:hover { background: #1c2128; }
+  .scope input { accent-color: var(--accent); }
+  .scope .path { display: block; color: var(--dim); font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
+  .field { margin-top: 10px; }
+  .field label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 4px; }
+  .field input {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font: 13.5px ui-monospace, Consolas, monospace;
+  }
+  .field input:focus { outline: none; border-color: var(--accent); }
+  .actions { display: flex; gap: 10px; margin: 4px 0 16px; }
+  button {
+    font: 600 15px system-ui, sans-serif; padding: 11px 22px; border-radius: 8px;
+    border: 1px solid var(--border); background: #21262d; color: var(--text); cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #30363d; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary { background: #238636; border-color: #2ea043; }
+  button.primary:hover:not(:disabled) { background: #2ea043; }
+  #log {
+    margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; font: 12.5px/1.6 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow-y: auto;
+    min-height: 60px; color: var(--dim);
+  }
+  #log .ok { color: var(--green); }
+  #log .warn { color: var(--yellow); }
+  #log .error { color: var(--red); }
+  #log .info { color: #c9d1d9; }
+  footer { text-align: center; color: var(--dim); font-size: 12.5px; margin-top: 24px; }
+  footer a { color: var(--accent); text-decoration: none; }
+  .hidden { display: none !important; }
+  .muted { color: var(--dim); font-size: 12.5px; margin: -6px 0 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span>⚡</span> token-optimizer <span>installer</span></h1>
+    <p>Choose your optimizations and companion plugins - everything is merged into your config, never overwritten.</p>
+  </header>
+
+  <section class="card">
+    <h2>1 · Where to install</h2>
+    <div class="scope">
+      <label>
+        <input type="radio" name="scope" value="global" checked>
+        <span><strong>Global - every project</strong><span class="path" id="global-path">…</span></span>
+      </label>
+      <label>
+        <input type="radio" name="scope" value="project">
+        <span><strong>Project - one folder only</strong><span class="path" id="project-path">…</span></span>
+      </label>
+    </div>
+    <div class="field hidden" id="project-dir-field">
+      <label for="project-dir">Project directory</label>
+      <input id="project-dir" spellcheck="false">
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2 · Optimizations <small>- token-optimizer itself</small></h2>
+    <div id="features"></div>
+    <div class="field hidden" id="routing-field">
+      <label for="routing-model">Cheaper model for titles / compaction / one-shots (provider/model)</label>
+      <input id="routing-model" placeholder="e.g. ollama/qwen2.5-coder" spellcheck="false">
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3 · Companion plugins <small>- optional, third-party, all MIT</small></h2>
+    <div class="muted">Checked plugins are added to your opencode.json plugins list (Exa becomes an MCP entry; agents is cloned locally; cc-switch opens its download page).</div>
+    <div id="companions"></div>
+  </section>
+
+  <div class="actions">
+    <button class="primary" id="install">Install</button>
+    <button id="close" class="hidden">Close installer</button>
+  </div>
+
+  <section class="card">
+    <h2>Progress</h2>
+    <pre id="log">Ready. Pick your options and press Install.</pre>
+  </section>
+
+  <footer>
+    backups: <code>opencode.json.bak-&lt;timestamp&gt;</code> · scriptable install: <code>install.ps1</code> ·
+    <a href="https://github.com/romine9/opencode-token-optimizer" target="_blank" rel="noreferrer">source</a>
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var state = null;
+  var logEl = document.getElementById("log");
+  var installBtn = document.getElementById("install");
+  var closeBtn = document.getElementById("close");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function log(level, msg) {
+    if (logEl.dataset.empty !== "1") { logEl.innerHTML = ""; logEl.dataset.empty = "1"; }
+    var span = document.createElement("span");
+    span.className = level || "info";
+    span.textContent = (msg || "") + "\n";
+    logEl.appendChild(span);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function featureRow(f) {
+    var checked = f.default ? " checked" : "";
+    return (
+      '<label class="row">' +
+      '<input type="checkbox" data-feature="' + esc(f.id) + '"' + checked + ">" +
+      '<span class="row-main"><strong>' + esc(f.label) + '</strong><span class="desc">' + esc(f.desc) + "</span></span>" +
+      "</label>"
+    );
+  }
+
+  function companionRow(c, installed) {
+    var badge = "";
+    if (installed) badge = '<span class="badge on">installed</span>';
+    else if (c.note) badge = '<span class="badge warn">' + esc(c.note) + "</span>";
+    else badge = '<span class="badge">' + esc(c.license || "") + "</span>";
+    var checked = installed ? " checked" : "";
+    return (
+      '<label class="row">' +
+      '<input type="checkbox" data-companion="' + esc(c.id) + '"' + checked + ">" +
+      '<span class="row-main"><strong>' + esc(c.label) + '</strong><span class="desc">' + esc(c.desc) + "</span></span>" +
+      badge +
+      "</label>"
+    );
+  }
+
+  function updatePaths() {
+    var scope = document.querySelector('input[name="scope"]:checked').value;
+    var dir = document.getElementById("project-dir").value;
+    document.getElementById("project-dir-field").classList.toggle("hidden", scope !== "project");
+    if (state) {
+      document.getElementById("global-path").textContent = state.globalFile;
+      document.getElementById("project-path").textContent = dir + "  →  opencode.json";
+      document.getElementById("project-path").title = state.projectFile;
+    }
+  }
+
+  function render() {
+    document.getElementById("features").innerHTML = state.features.map(featureRow).join("");
+    var installedPkgs = (state.global.plugins || []).concat(state.project.plugins || []);
+    document.getElementById("companions").innerHTML = state.companions
+      .map(function (c) {
+        var installed = (c.pkg && installedPkgs.indexOf(c.pkg) >= 0) || (c.id === "exa" && (state.global.exa || state.project.exa));
+        return companionRow(c, installed);
+      })
+      .join("");
+    document.getElementById("global-path").textContent = state.globalFile;
+    document.getElementById("project-dir").value = state.projectDir;
+    document.getElementById("project-dir").spellcheck = false;
+
+    // Reflect an existing token-optimizer registration in the checkboxes.
+    var to = state.global.tokenOptimizer && state.global.tokenOptimizer.present
+      ? state.global.tokenOptimizer
+      : state.project.tokenOptimizer;
+    if (to && to.present) {
+      var set = function (id, on) {
+        var el = document.querySelector('[data-feature="' + id + '"]');
+        if (el && on !== null && on !== undefined) el.checked = on;
+      };
+      set("compress", to.compress); set("dedupe", to.dedupe); set("rotate", to.rotate);
+      set("rtk", to.rtk); set("caveman", to.caveman);
+      if (to.routingModel) {
+        set("routing", true);
+        document.getElementById("routing-model").value = to.routingModel;
+      }
+    }
+
+    // Prerequisite hints.
+    if (!state.checks.npm) log("warn", "npm not found on PATH - dependency install will fail.");
+    if (!state.checks.cargo && !state.checks.addon) log("warn", "No Rust toolchain and no prebuilt addon - JS fallback (~3x slower) will be used.");
+    if (state.checks.addon) log("info", "Native addon: already built.");
+    if (state.checks.guiBundle) log("info", "GUI bundle: already built.");
+    if (state.global.parseError) log("error", "Global config problem: " + state.global.parseError);
+    if (state.project.parseError) log("error", "Project config problem: " + state.project.parseError);
+
+    updatePaths();
+  }
+
+  document.addEventListener("change", function (e) {
+    if (e.target.name === "scope" || e.target.id === "project-dir") updatePaths();
+    if (e.target.dataset && e.target.dataset.feature === "routing") {
+      document.getElementById("routing-field").classList.toggle("hidden", !e.target.checked);
+    }
+  });
+  document.getElementById("project-dir").addEventListener("input", updatePaths);
+
+  function collect() {
+    var features = {};
+    document.querySelectorAll("[data-feature]").forEach(function (el) { features[el.dataset.feature] = el.checked; });
+    var companions = {};
+    document.querySelectorAll("[data-companion]").forEach(function (el) { companions[el.dataset.companion] = el.checked; });
+    return {
+      scope: document.querySelector('input[name="scope"]:checked').value,
+      projectDir: document.getElementById("project-dir").value,
+      routingModel: document.getElementById("routing-model").value,
+      features: features,
+      companions: companions
+    };
+  }
+
+  installBtn.addEventListener("click", function () {
+    installBtn.disabled = true;
+    closeBtn.classList.add("hidden");
+    logEl.dataset.empty = "0";
+    logEl.innerHTML = "";
+    fetch("/api/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(collect())
+    }).then(function (res) {
+      if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = "";
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return;
+          buf += decoder.decode(r.value, { stream: true });
+          var lines = buf.split("\n");
+          buf = lines.pop();
+          lines.forEach(function (line) {
+            if (!line.trim()) return;
+            var msg;
+            try { msg = JSON.parse(line); } catch (e) { return; }
+            if (msg.t === "log") log(msg.level, msg.msg);
+            if (msg.t === "done") {
+              installBtn.disabled = false;
+              closeBtn.classList.remove("hidden");
+              if (msg.ok) log("ok", "✔ Done - you can close this window.");
+              else log("error", "✘ Finished with errors - see above.");
+            }
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function (err) {
+      installBtn.disabled = false;
+      log("error", "installer failed: " + err.message);
+    });
+  });
+
+  closeBtn.addEventListener("click", function () {
+    fetch("/api/shutdown").catch(function () {});
+    setTimeout(function () { window.close(); }, 300);
+  });
+
+  fetch("/api/state").then(function (r) { return r.json(); }).then(function (s) {
+    state = s;
+    render();
+  }).catch(function (err) {
+    log("error", "could not load installer state: " + err.message);
+  });
+})();
+</script>
+</body>
+</html>

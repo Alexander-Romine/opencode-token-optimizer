@@ -1,6 +1,6 @@
 # token-optimizer
 
-A token-efficiency plugin for OpenCode: smaller tool outputs, verified dedupe, and one-key session rotation so agentic sessions cost less and run longer.
+A token-efficiency plugin for OpenCode: smaller tool outputs, RTK-style command-output reduction, verified dedupe, terse responses, and one-key session rotation so agentic sessions cost less and run longer.
 
 **Download:** [Releases page](../../releases)
 
@@ -38,9 +38,16 @@ ses_77d0c...   topai/glm-5.3-flash               -     4118      892         0  
 
 **Prerequisites:** [OpenCode](https://opencode.ai), [Node.js](https://nodejs.org) 18+. [Rust](https://rustup.rs) is optional (a prebuilt addon ships with the repo; without either, the JS fallback runs).
 
-**Double-click `Install.cmd`** - it asks whether to register globally (recommended) or for this folder only, then installs deps, sets up the native addon, registers the plugin and runs the smoke test. The window waits for a key so you can read the result. `Uninstall.cmd` reverses it the same way.
+**Double-click `Install.cmd`** - it opens a **GUI installer in your browser** (a localhost page, no PowerShell involved):
 
-**Or one command** - same thing from a terminal:
+1. Pick a scope: **global** (every project) or **one project folder**.
+2. Check/uncheck each optimization: compression, dedupe, auto-rotation, RTK, caveman, model routing, native addon.
+3. Optionally check **companion plugins** (see below) - third-party plugins like `oh-my-opencode-slim`, history search, quota, Supermemory, Exa search, auth helpers, and more.
+4. Press **Install** - progress streams live; it backs up and merges your `opencode.json`, installs deps, builds the native addon + GUI bundle, and runs the smoke test.
+
+The page shows what's already installed and refuses to touch a config it can't parse (JSONC/comments) - it tells you exactly what to add by hand instead. `Uninstall.cmd` reverses the registration.
+
+**Or one command** - scriptable, same merge guarantees:
 
 ```powershell
 .\install.ps1            # registers for this project
@@ -76,7 +83,7 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
 }
 ```
 
-Restart OpenCode, then run **`/tokens`** in the TUI for the efficiency report and **`/rotate`** to start a fresh seeded session.
+Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette) and **`/rotate`** to start a fresh seeded session.
 
 ## Build
 
@@ -86,8 +93,9 @@ Requires Node.js 18+; Rust for the native addon.
 npm install               # also runs scripts/setup-native.mjs (build or prebuilt)
 npm run typecheck
 npm run build:native      # explicit rebuild of the Rust addon
+npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
-node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK checks
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
 
@@ -125,6 +133,23 @@ Every result over 24,000 chars is capped to head (70%) + tail (30%) with an expl
 
 **Worked example** - one session that reads four large files (the oversized suite) plus a normal turn's worth of typical outputs: tool output drops from **1,254,851 chars to 171,962 chars (-86%)**, and every under-budget result arrives intact. Since this context is re-sent on every subsequent request (even cache hits are billed), the saving compounds for the rest of the session. How much total token spend you save depends on how much of your context is tool output - in agentic coding it's usually the majority.
 
+**RTK command-output reduction** (on by default, `rtk.enabled`) - recognises command output by its shape (test runs, `git status`/`log`, installs, builds) and keeps the summary while dropping the noise. Measured by `node test/smoke.mjs`:
+
+| Command output | In | Out | Cut | What the model still sees |
+| --- | ---: | ---: | ---: | --- |
+| `cargo test` run | 8,550 | 408 | 95.2% | pass/fail counts, every failure with its message |
+| `git status` | 3,010 | 1,440 | 52.2% | changed files; help text dropped |
+| build with warnings | 6,242 | 439 | 93.0% | outcome, errors, warnings |
+| unknown command | — | — | 0% | **passthrough, byte-identical** |
+
+Quality rules that hold by construction:
+
+- **Anything under `rtk.minChars` (1,200 chars) passes through untouched** - small outputs are already cheap.
+- **Failures are never dropped**: a failing test's name, message and assertion diff stay in the reduced output.
+- Every reduction appends an honest marker (`… reduced by token-optimizer: 8550 -> 408 chars`) so the model knows output was shortened and can re-run with narrower arguments if it needs the detail.
+- Unknown formats (anything RTK doesn't recognise) return the input unchanged - it can only ever reduce output it fully understands.
+- RTK runs **before** compression, so the model never sees the pre-RTK text at all.
+
 **Cost of the savings** (the honest part):
 
 - **Under the budget: zero quality loss.** Byte-identical for clean text; noise-only removal (ANSI/whitespace) for logs. Measured 100% content kept.
@@ -145,13 +170,34 @@ Every result over 24,000 chars is capped to head (70%) + tail (30%) with an expl
 
 - Tool output is cleaned and capped in Rust: ANSI/control stripping, CRLF normalization, blank-run collapse, head+tail truncation with an explicit omission marker
 - Byte-identical repeat results are replaced with a verified stub (per-session, window of 4, configurable)
+- **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
+- **Caveman terse responses** (`caveman.enabled`, off by default): a system-prompt instruction to answer first with no filler - code, paths and errors stay verbatim
 - `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
-- `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed
+- `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - works in the TUI **and** in Desktop (command palette), via the bundled GUI part
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)
 - Optional output-token budget (`budgetMaxTokens`) pinned to every agent-loop request
 - Pure-JS fallback with byte-identical hashing if the native addon can't load - degrades in speed, never in correctness
 - Bounded memory: per-session dedupe rings (max 50 sessions), LRU metrics eviction, debounced storage writes
+- GUI installer with per-feature checkboxes plus optional third-party companion plugins (below)
+
+## Companion plugins
+
+The GUI installer can optionally add these third-party plugins (all MIT, maintained by their authors - not by this project). Check them on/off in step 3 of the installer:
+
+| Plugin | What it does | How the installer adds it |
+| --- | --- | --- |
+| `oh-my-opencode-slim` | Multi-agent orchestration: specialist agents, auto-delegation, model mixing | `plugins[]` entry |
+| `opencode-history-search` | Keyword/regex/fuzzy search over all your OpenCode conversation history | `plugins[]` entry |
+| `opencode-quota` (`@slkiser/opencode-quota`) | Provider quota and usage views: `/quota`, sidebar panel, terminal view | `plugins[]` entry |
+| `opencode-supermemory` | Persistent cross-session memory (needs a Supermemory account) | `plugins[]` entry |
+| `opencode-exa-search` | Web search + page fetch through Exa's hosted MCP endpoint | `mcp.servers.exa` remote entry (schema-verified) |
+| `opencode-gemini-auth` | Gemini Code Assist OAuth for eligible organization subscriptions | `plugins[]` entry |
+| `opencode-antigravity-auth` | Unofficial Google Antigravity OAuth access | `plugins[]` entry |
+| `agents` (wshobson) | 200+ specialist agents, 185 skills, 105 workflows | cloned to `~/.local/share/opencode/ext/` and generated with `uv` (needs git + uv; prints manual steps if either is missing) |
+| `cc-switch` | Desktop app for managing coding-tool providers | not a config plugin - the installer opens its GitHub releases page |
+
+Companions are merged into your existing `opencode.json` exactly like the main plugin: timestamped backup first, never overwritten, and checking one that's already installed is a no-op.
 
 ## Tech Stack
 

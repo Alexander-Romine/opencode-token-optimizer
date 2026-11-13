@@ -18,8 +18,11 @@
  *
  * Everything hot goes through the Rust addon; see `native.ts`.
  */
-import { api } from "./native"
-import { compressOptions, type Options } from "./options"
+// Explicit .ts extensions so Node's strip-only test runner can resolve them;
+// bundler-style resolvers (OpenCode/Bun) accept them too.
+import { api } from "./native.ts"
+import { compressOptions, type Options } from "./options.ts"
+import { reduceCommand } from "./rtk.ts"
 
 export interface ToolCallOutcome {
   /** Characters the tool produced before any optimization. */
@@ -61,7 +64,13 @@ export class ToolOptimizer {
   private readonly rings = new Map<string, RingEntry[]>()
   private readonly seq = new Map<string, number>()
 
-  constructor(private readonly options: Options) {}
+  private readonly options: Options
+
+  // Plain field instead of a parameter property: Node's type-stripping mode
+  // (used by the .mjs tests) cannot parse `constructor(private ...)`.
+  constructor(options: Options) {
+    this.options = options
+  }
 
   private get window(): number {
     return this.options.tool.dedupeWindow
@@ -90,9 +99,11 @@ export class ToolOptimizer {
 
   /**
    * Rewrite `result.content` in place. Returns `null` when the tool is excluded
-   * or the result has no text payload.
+   * or the result has no text payload. `command` is the shell command for
+   * shell-like tools (from the tool input); when RTK recognises it, the output
+   * is reduced to its signal before compression.
    */
-  optimize(sessionID: string, tool: string, result: unknown): ToolCallOutcome | null {
+  optimize(sessionID: string, tool: string, result: unknown, command?: string): ToolCallOutcome | null {
     const payload = result as { content?: unknown } | null | undefined
     if (!payload || !Array.isArray(payload.content)) return null
     if (this.excluded(tool)) return null
@@ -141,7 +152,15 @@ export class ToolOptimizer {
         continue
       }
 
-      const compressed = api.compress(original, compressOpts)
+      const compressed = api.compress(
+        // RTK reduces only what the model actually receives. The dedupe hash
+        // above stays over the original, so a "byte-identical" claim can never
+        // be satisfied by two different outputs that reduce to the same text.
+        command && this.options.rtk.enabled
+          ? reduceCommand(command, original, this.options.rtk)
+          : original,
+        compressOpts,
+      )
       item.text = compressed.text
       finalChars += compressed.text.length
       if (compressed.truncated) anyTruncated = true

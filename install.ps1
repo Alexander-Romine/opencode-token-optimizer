@@ -187,9 +187,36 @@ if (-not $SkipConfig) {
                 generate   = ""
                 agents     = [ordered]@{}
             }
+            rtk            = [ordered]@{
+                enabled  = $true
+                minChars = 1200
+            }
+            caveman        = [ordered]@{
+                enabled = $false
+                text    = ""
+            }
             budgetMaxTokens = 0
             stateDir       = ".opencode/token-optimizer/state"
         }
+    }
+
+    # Overlay the installer's explicit values onto existing options, keeping any
+    # keys the installer does not manage (e.g. "//..." doc keys users write in
+    # their config). Fresh values always win for keys the installer owns.
+    function Merge-Options($existing, $fresh) {
+        if ($null -eq $existing -or $existing -isnot [pscustomobject]) { return $fresh }
+        $result = [ordered]@{}
+        foreach ($p in $existing.PSObject.Properties) { $result[$p.Name] = $p.Value }
+        foreach ($k in @($fresh.Keys)) {
+            $fv = $fresh[$k]
+            $ev = if ($result.Contains($k)) { $result[$k] } else { $null }
+            if ($fv -is [System.Collections.IDictionary] -and $ev -is [pscustomobject]) {
+                $result[$k] = Merge-Options $ev $fv
+            } else {
+                $result[$k] = $fv
+            }
+        }
+        return $result
     }
 
     $existing = @()
@@ -221,15 +248,27 @@ if (-not $SkipConfig) {
         New-Item -ItemType Directory -Path $configDir -Force | Out-Null
     }
 
-    # Replace an existing entry for this same package, else append.
+    # Replace an existing entry for this same package, else append. If the same
+    # plugin is already registered from a different folder (e.g.
+    # ./plugins/token-optimizer), keep that path instead of duplicating it.
     $merged = @()
     $replaced = $false
     foreach ($item in $existing) {
         $pkg = $null
         if ($item -is [string]) { $pkg = $item }
         elseif ($item.PSObject.Properties.Name -contains "package") { $pkg = $item.package }
-        if ($pkg -and (($pkg -replace "\\", "/") -eq $packagePath)) {
-            $merged += (ConvertTo-Json $entry -Depth 10 | ConvertFrom-Json)
+        $normPkg = if ($pkg) { $pkg -replace "\\", "/" } else { $null }
+        $isOurs = $normPkg -and ($normPkg -eq $packagePath)
+        $isSamePlugin = $normPkg -and ($normPkg -like "*token-optimizer*")
+        if ($isOurs -or $isSamePlugin) {
+            $entryOut = [ordered]@{
+                package = if ($isOurs) { $packagePath } else { $pkg }
+                options = $entry.options
+            }
+            if ($item -isnot [string] -and $item.PSObject.Properties.Name -contains "options") {
+                $entryOut.options = Merge-Options $item.options $entry.options
+            }
+            $merged += (ConvertTo-Json $entryOut -Depth 10 | ConvertFrom-Json)
             $replaced = $true
         } else {
             $merged += $item

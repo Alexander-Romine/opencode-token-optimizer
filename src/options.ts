@@ -44,6 +44,27 @@ export interface RoutingOptions {
   agents: Record<string, string>
 }
 
+export interface RtkOptions {
+  /**
+   * RTK-style command-output reduction: recognises common dev commands
+   * (test runners, git, installs, listings) and keeps their signal -
+   * summaries, failures, errors - instead of every line.
+   */
+  enabled: boolean
+  /** Outputs under this many chars pass through untouched (short output is not worth a rule). */
+  minChars: number
+}
+
+export interface CavemanOptions {
+  /**
+   * Caveman-style terseness: appends an instruction to the system prompt that
+   * drops filler from prose while keeping code, paths and errors verbatim.
+   */
+  enabled: boolean
+  /** Custom instruction. Empty string uses the built-in default. */
+  text: string
+}
+
 export interface Options {
   enabled: boolean
   /** Characters per token used by the estimator. 4 is the usual prose/code blend. */
@@ -51,6 +72,8 @@ export interface Options {
   rotation: RotationOptions
   tool: ToolOptions
   routing: RoutingOptions
+  rtk: RtkOptions
+  caveman: CavemanOptions
   /** Output-token cap applied to every agent-loop request. 0 leaves it alone. */
   budgetMaxTokens: number
   /** Directory, relative to the project root, that holds state files. */
@@ -81,6 +104,8 @@ const DEFAULT: Options = {
     exclude: ["write", "edit", "apply_patch"],
   },
   routing: { agents: {} },
+  rtk: { enabled: true, minChars: 1_200 },
+  caveman: { enabled: false, text: "" },
   budgetMaxTokens: 0,
   stateDir: ".opencode/token-optimizer/state",
   flushMs: 4_000,
@@ -123,12 +148,23 @@ function stringList(value: unknown, fallback: string[]): string[] {
 
 export function parseOptions(raw: unknown): Options {
   const root = object(raw)
-  if (!root) return { ...DEFAULT, rotation: { ...DEFAULT.rotation }, tool: { ...DEFAULT.tool }, routing: { agents: {} } }
+  if (!root) {
+    return {
+      ...DEFAULT,
+      rotation: { ...DEFAULT.rotation },
+      tool: { ...DEFAULT.tool },
+      routing: { agents: {} },
+      rtk: { ...DEFAULT.rtk },
+      caveman: { ...DEFAULT.caveman },
+    }
+  }
 
   const rotationRaw = object(read(root, "rotation", "session")) ?? {}
   const toolRaw = object(read(root, "tool", "tools")) ?? {}
   const routingRaw = object(read(root, "routing", "model")) ?? {}
   const stateRaw = object(read(root, "state")) ?? {}
+  const rtkRaw = object(read(root, "rtk")) ?? {}
+  const cavemanRaw = object(read(root, "caveman")) ?? {}
 
   const agentsRaw = object(read(routingRaw, "agents")) ?? {}
 
@@ -164,12 +200,24 @@ export function parseOptions(raw: unknown): Options {
     agents,
   }
 
+  const rtk: RtkOptions = {
+    enabled: bool(read(rtkRaw, "enabled"), DEFAULT.rtk.enabled),
+    minChars: Math.max(0, num(read(rtkRaw, "minChars", "min_chars"), DEFAULT.rtk.minChars)),
+  }
+
+  const caveman: CavemanOptions = {
+    enabled: bool(read(cavemanRaw, "enabled"), DEFAULT.caveman.enabled),
+    text: typeof read(cavemanRaw, "text") === "string" ? (read(cavemanRaw, "text") as string) : DEFAULT.caveman.text,
+  }
+
   return {
     enabled: bool(read(root, "enabled"), DEFAULT.enabled),
     charsPerToken: clamp(num(read(root, "charsPerToken", "chars_per_token"), DEFAULT.charsPerToken), 1, 20),
     rotation,
     tool,
     routing,
+    rtk,
+    caveman,
     budgetMaxTokens: Math.max(0, num(read(root, "budgetMaxTokens", "budget_max_tokens"), DEFAULT.budgetMaxTokens)),
     stateDir: str(read(stateRaw, "dir", "directory")) ?? DEFAULT.stateDir,
     flushMs: clamp(num(read(root, "flushMs", "flush_ms"), DEFAULT.flushMs), 250, 300_000),

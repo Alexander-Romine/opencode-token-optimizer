@@ -4,27 +4,30 @@ cd /d "%~dp0"
 
 echo.
 echo  ==========================================
-echo    token-optimizer - installer
+echo    token-optimizer - GUI installer
 echo  ==========================================
 echo.
-echo   Register the plugin where?
+echo   A browser window will open with checkboxes for
+echo   every optimization and companion plugin.
 echo.
-echo    [1] Every project    (global config - recommended)
-echo    [2] This folder only (project config)
-echo.
-choice /c 12 /n /m "   Choose 1 or 2: "
-if errorlevel 2 (set "ARGS=") else (set "ARGS=-Global")
 
-echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %ARGS%
+where node >nul 2>nul
+if errorlevel 1 (
+    echo   Node.js is required but was not found on PATH.
+    echo   Install it from https://nodejs.org and double-click this again.
+    echo.
+    pause
+    exit /b 1
+)
+
+node "%~dp0scripts\install-gui.mjs"
 set "RC=%ERRORLEVEL%"
 
 echo.
 if not "%RC%"=="0" (
-    echo   Install FAILED - see the messages above. Exit code: %RC%
+    echo   Installer exited with code %RC% - see the messages above.
 ) else (
-    echo   Install complete. Keep this folder where it is -
-    echo   your OpenCode config points at it.
+    echo   Installer closed.
 )
 echo.
 pause
