@@ -11,9 +11,9 @@
  *  * **Tool optimization** (`execute.after`) - dedupe, clean, truncate tool
  *    results. This is where most tokens actually go.
  *  * **State + rotation**           - durable state file per session, and
- *    `/rotate` to start a fresh session seeded from it. Auto-rotation is
- *    opt-in (`rotation.auto`) because creating sessions unattended should be a
- *    deliberate choice.
+ *    `/rotate` to start a fresh session seeded from it. Auto-rotation kicks
+ *    in at `rotation.thresholdPct` of the context window (on by default;
+ *    set `rotation.auto` to false to opt out).
  *  * **Routing** (`experimental.model.resolve`) - send titles, compaction
  *    summaries and one-shot generations to a cheaper model.
  *  * **Reporting** (RPC)            - surface the numbers in the TUI.

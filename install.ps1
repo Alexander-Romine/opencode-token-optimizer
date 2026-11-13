@@ -177,7 +177,7 @@ if (-not $SkipConfig) {
                 exclude         = @("write", "edit", "apply_patch")
             }
             rotation       = [ordered]@{
-                auto          = $false
+                auto          = $true
                 thresholdPct  = 85
                 titleSuffix   = " (rotated)"
             }
@@ -277,5 +277,6 @@ if ($Global) {
 }
 Write-Host "  * In the TUI, run /tokens for the efficiency report."
 Write-Host "  * Run /rotate to start a fresh session seeded from the current one's state."
-Write-Host "  * To enable auto-rotation, set options.rotation.auto = true in your config."
+Write-Host "  * Auto-rotation is ON: a fresh session starts at 85% of the context window."
+Write-Host "    Change options.rotation.auto in your config to disable it."
 Write-Host ""

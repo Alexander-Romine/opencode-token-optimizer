@@ -68,7 +68,7 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
       "package": "C:/path/to/opencode-token-optimizer",
       "options": {
         "enabled": true,
-        "rotation": { "auto": false },   // set true to auto-start fresh sessions
+        "rotation": { "auto": true },   // fresh session at 85% of context; false to disable
         "tool": { "maxChars": 24000, "dedupeWindow": 4 }
       }
     }
@@ -145,7 +145,7 @@ Every result over 24,000 chars is capped to head (70%) + tail (30%) with an expl
 
 - Tool output is cleaned and capped in Rust: ANSI/control stripping, CRLF normalization, blank-run collapse, head+tail truncation with an explicit omission marker
 - Byte-identical repeat results are replaced with a verified stub (per-session, window of 4, configurable)
-- `/rotate` writes a structured state file and starts a fresh session seeded from it; optional auto-rotation at 85% of the context window (`rotation.auto`)
+- `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
 - `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)

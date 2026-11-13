@@ -65,7 +65,7 @@ const DEFAULT: Options = {
   enabled: true,
   charsPerToken: 4,
   rotation: {
-    auto: false,
+    auto: true,
     thresholdPct: 85,
     titleSuffix: " (rotated)",
   },
