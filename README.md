@@ -38,7 +38,9 @@ ses_77d0c...   topai/glm-5.3-flash               -     4118      892         0  
 
 **Prerequisites:** [OpenCode](https://opencode.ai), [Node.js](https://nodejs.org) 18+. [Rust](https://rustup.rs) is optional (a prebuilt addon ships with the repo; without either, the JS fallback runs).
 
-**One command** - installs deps, sets up the native addon, registers the plugin, verifies it:
+**Double-click `Install.cmd`** - it asks whether to register globally (recommended) or for this folder only, then installs deps, sets up the native addon, registers the plugin and runs the smoke test. The window waits for a key so you can read the result. `Uninstall.cmd` reverses it the same way.
+
+**Or one command** - same thing from a terminal:
 
 ```powershell
 .\install.ps1            # registers for this project
