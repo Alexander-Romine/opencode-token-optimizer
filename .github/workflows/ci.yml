@@ -34,7 +34,7 @@ jobs:
         env:
           TOKEN_OPTIMIZER_TARGET: ${{ runner.temp }}/cargo-target
 
-      - name: Smoke test (native load + Rust/JS agreement + RTK)
+      - name: Smoke test (native load + Rust/JS agreement + RTK + /plugins)
         run: node test/smoke.mjs
 
       - name: Benchmark (prints numbers, fails on error)
