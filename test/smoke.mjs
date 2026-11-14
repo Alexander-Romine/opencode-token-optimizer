@@ -57,7 +57,7 @@ check("utf8 intact", !emoji.text.includes("\ufffd") && emoji.resultChars <= 60)
 
 // ---- RTK command-output reduction ----
 import { reduceCommand } from "../src/rtk.ts"
-import { ToolOptimizer } from "../src/tools.ts"
+import { ToolOptimizer, transformText } from "../src/tools.ts"
 import { parseOptions } from "../src/options.ts"
 
 const rtkDefaults = parseOptions({}).rtk
@@ -259,7 +259,165 @@ check("pm: JSONC write refused with friendly error", pm2Set.errors.length === 1 
 check("pm: JSONC file byte-unchanged", fs.readFileSync(jFile, "utf8") === jRaw)
 check("pm: JSONC refusal wrote no backup", pm2Set.backups.length === 0)
 
+// ---- conflict detection ----
+const pm3Dir = path.join(pmTmp, "conflict-project")
+const pm3Global = path.join(pmTmp, "conflict-global")
+fs.mkdirSync(pm3Dir, { recursive: true })
+fs.mkdirSync(pm3Global, { recursive: true })
+const gFile3 = path.join(pm3Global, "opencode.json")
+const pFile3 = path.join(pm3Dir, "opencode.json")
+fs.writeFileSync(
+  gFile3,
+  `${JSON.stringify({ plugins: ["/x/global-copy", "opencode-gemini-auth", "opencode-supermemory"] }, null, 2)}\n`,
+)
+fs.writeFileSync(
+  pFile3,
+  `${JSON.stringify({ plugins: ["./proj-copy", "opencode-antigravity-auth", "oh-my-opencode-slim"] }, null, 2)}\n`,
+)
+let pm3Active = [
+  { id: "token-optimizer", source: { type: "local", path: "/x/global-copy" }, features: { server: true }, state: { status: "active" } },
+  { id: "opencode-gemini-auth", source: { type: "package", target: "opencode-gemini-auth" }, features: { server: true }, state: { status: "active" } },
+  { id: "opencode-antigravity-auth", source: { type: "package", target: "opencode-antigravity-auth" }, features: { server: true }, state: { status: "active" } },
+  { id: "opencode-supermemory", source: { type: "package", target: "opencode-supermemory" }, features: { server: true }, state: { status: "active" } },
+  { id: "oh-my-opencode-slim", source: { type: "package", target: "oh-my-opencode-slim" }, features: { tui: true }, state: { status: "active" } },
+]
+const pm3Store = new Map([
+  [
+    "plugin-ids",
+    {
+      targets: { "/x/global-copy": "token-optimizer", [path.join(pm3Dir, "proj-copy")]: "token-optimizer" },
+      labels: { "token-optimizer": "/x/global-copy" },
+    },
+  ],
+])
+const pm3 = createPluginmgr({
+  directory: pm3Dir,
+  globalDir: pm3Global,
+  list: async () => pm3Active,
+  storage: { get: async (k) => pm3Store.get(k), set: async (k, v) => void pm3Store.set(k, v) },
+})
+let pm3List = await pm3.list()
+const row3 = (key) => pm3List.rows.find((r) => r.key === key)
+
+check("conflict: every row carries a conflict field", pm3List.rows.every((r) => typeof r.conflict === "string"))
+check(
+  "conflict: duplicate id from two distinct paths flagged",
+  /duplicate id "token-optimizer"/.test(row3("token-optimizer")?.conflict ?? "") &&
+    (row3("token-optimizer")?.conflict ?? "").includes("2 paths"),
+  row3("token-optimizer")?.conflict,
+)
+check(
+  "conflict: gemini-auth vs antigravity-auth flagged (both sides)",
+  (row3("opencode-gemini-auth")?.conflict ?? "").includes("conflicts with opencode-antigravity-auth") &&
+    (row3("opencode-antigravity-auth")?.conflict ?? "").includes("conflicts with opencode-gemini-auth"),
+  `${row3("opencode-gemini-auth")?.conflict} | ${row3("opencode-antigravity-auth")?.conflict}`,
+)
+check("conflict: supermemory alone not flagged", row3("opencode-supermemory")?.conflict === "", row3("opencode-supermemory")?.conflict)
+check(
+  "conflict: oh-my-opencode-slim never matches oh-my-opencode",
+  row3("oh-my-opencode-slim")?.conflict === "",
+  row3("oh-my-opencode-slim")?.conflict,
+)
+
+// the same package declared in two files is one target - not a duplicate id
+const pObj3 = JSON.parse(fs.readFileSync(pFile3, "utf8"))
+pObj3.plugins.push("opencode-gemini-auth")
+fs.writeFileSync(pFile3, `${JSON.stringify(pObj3, null, 2)}\n`)
+pm3List = await pm3.list()
+check(
+  "conflict: same target twice is not a duplicate-id conflict",
+  !(row3("opencode-gemini-auth")?.conflict ?? "").includes("duplicate id"),
+  row3("opencode-gemini-auth")?.conflict,
+)
+
+// a disabled partner suppresses the pair note
+pm3Active = pm3Active.filter((p) => p.id !== "opencode-antigravity-auth")
+const pObj3b = JSON.parse(fs.readFileSync(pFile3, "utf8"))
+pObj3b.plugins.push("-opencode-antigravity-auth")
+fs.writeFileSync(pFile3, `${JSON.stringify(pObj3b, null, 2)}\n`)
+pm3List = await pm3.list()
+check(
+  "conflict: disabled partner suppresses pair note",
+  row3("opencode-antigravity-auth")?.enabled === false && row3("opencode-gemini-auth")?.conflict === "",
+  `antigravity=${JSON.stringify(row3("opencode-antigravity-auth")?.enabled)} gemini=${JSON.stringify(row3("opencode-gemini-auth")?.conflict)}`,
+)
+
 fs.rmSync(pmTmp, { recursive: true, force: true })
+
+// ---- structural transforms (compactJson / collapseTable / scrubBase64 / collapseRepeats) ----
+const toolDefaults = parseOptions({}).tool
+
+const jsonPretty = '{\n  "a": 1,\n  "b": [1, 2, 3]\n}\n'
+check(
+  "transform: compactJson drops insignificant whitespace",
+  transformText(jsonPretty, "bash", toolDefaults) === '{"a":1,"b":[1,2,3]}',
+  JSON.stringify(transformText(jsonPretty, "bash", toolDefaults)),
+)
+check("transform: JSONL left untouched", transformText('{"a": 1}\n{"b": 2}', "bash", toolDefaults) === '{"a": 1}\n{"b": 2}')
+check("transform: prose-wrapped JSON left untouched", transformText('Result: {"a": 1}', "bash", toolDefaults) === 'Result: {"a": 1}')
+check("transform: read tool output byte-faithful", transformText(jsonPretty, "read", toolDefaults) === jsonPretty)
+
+const table = "| Name | V |\n| ---- | - |\n| x    | 1 |\n"
+const tableOut = transformText(table, "bash", toolDefaults)
+check("transform: table padding stripped", tableOut === "|Name|V|\n|----|-|\n|x|1|\n", JSON.stringify(tableOut))
+
+const fenced = "```\n| a | b |\n```\n| c | d |"
+const fencedOut = transformText(fenced, "bash", toolDefaults)
+check(
+  "transform: table inside code fence untouched, outside collapsed",
+  fencedOut.includes("| a | b |") && fencedOut.endsWith("|c|d|"),
+  JSON.stringify(fencedOut),
+)
+
+const escaped = "| a \\| b |"
+check("transform: escaped-pipe row untouched", transformText(escaped, "bash", toolDefaults) === escaped)
+
+const blob = `${"QUJD".repeat(150)}=`
+const scrubOn = { ...toolDefaults, scrubBase64: true }
+check("transform: base64 scrub off by default", transformText(blob, "bash", toolDefaults) === blob)
+const scrubOut = transformText(blob, "bash", scrubOn)
+check("transform: base64 scrub elides >=500-char blobs", scrubOut === "[token-optimizer: base64 blob of 601 chars elided]", scrubOut)
+check("transform: hex-only runs never scrubbed", transformText("0".repeat(600), "bash", scrubOn) === "0".repeat(600))
+
+const repeatsOn = { ...toolDefaults, collapseRepeats: true }
+const boom = `ERROR: module failed while loading: ${"x".repeat(60)}`
+const logsOut = transformText([boom, boom, boom, "done"].join("\n"), "bash", repeatsOn)
+check(
+  "transform: identical long lines collapsed with count",
+  logsOut.split(boom).length - 1 === 1 && logsOut.includes("2 more identical lines omitted"),
+  JSON.stringify(logsOut),
+)
+check("transform: short repeated lines untouched", transformText("}\n}\n}", "bash", repeatsOn) === "}\n}\n}")
+check("transform: run of two not collapsed", transformText(`${boom}\n${boom}`, "bash", repeatsOn) === `${boom}\n${boom}`)
+
+check(
+  "transform: snake_case option aliases parse",
+  parseOptions({ tool: { compact_json: false, scrub_base64: true } }).tool.compactJson === false &&
+    parseOptions({ tool: { scrub_base64: true } }).tool.scrubBase64 === true,
+)
+
+// through optimize(): JSON compacted before compress, read untouched, dedupe
+// hash still over the original bytes (whitespace variants never dedupe).
+const jOpt = new ToolOptimizer(parseOptions({ tool: { dedupeWindow: 0 } }))
+const jRes = { content: [{ type: "text", text: '{\n  "ok": true\n}' }] }
+const jOut = jOpt.optimize("json-sess", "bash", jRes)
+check("transform: optimize() compacts JSON tool output", jOut !== null && jRes.content[0].text === '{"ok":true}', JSON.stringify(jRes.content[0]?.text))
+const rRes = { content: [{ type: "text", text: '{\n  "read": true\n}' }] }
+jOpt.optimize("json-sess", "read", rRes)
+check("transform: optimize() leaves read tool byte-faithful", rRes.content[0].text === '{\n  "read": true\n}', JSON.stringify(rRes.content[0].text))
+
+const hOpt = new ToolOptimizer(parseOptions({ tool: { dedupeMinChars: 5 } }))
+const h1 = { content: [{ type: "text", text: '{\n  "a": 1\n}' }] }
+const h2 = { content: [{ type: "text", text: '{"a":1}' }] }
+hOpt.optimize("h-sess", "bash", h1)
+const hOut2 = hOpt.optimize("h-sess", "bash", h2)
+check(
+  "transform: different JSON originals never deduped despite equal compaction",
+  hOut2 !== null && hOut2.deduped === false && !h2.content[0].text.includes("withheld"),
+)
+const h3 = { content: [{ type: "text", text: '{\n  "a": 1\n}' }] }
+const hOut3 = hOpt.optimize("h-sess", "bash", h3)
+check("transform: byte-identical JSON still deduped", hOut3 !== null && hOut3.deduped === true)
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

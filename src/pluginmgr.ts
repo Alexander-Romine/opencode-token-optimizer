@@ -60,6 +60,31 @@ const GUARDED = new Set(["opencode.config.policy", "opencode.provider.opencode"]
 /** Plugin storage key for the package/path -> id map. */
 const STORAGE_KEY = "plugin-ids"
 
+/**
+ * Documented conflicts between installed packages. Matched EXACTLY against a
+ * row's id or declared name, so `oh-my-opencode-slim` never trips the
+ * `oh-my-opencode` rules (slim removed the auth proxies and compact hooks
+ * these notes are about). Only fired when BOTH rows are enabled.
+ * Sources: each pair's own documentation; see README "Plugin conflicts".
+ */
+const CONFLICT_PAIRS: ReadonlyArray<readonly [string, string, string]> = [
+  [
+    "opencode-gemini-auth",
+    "opencode-antigravity-auth",
+    "both handle Google OAuth; antigravity-auth's docs say to remove all gemini-auth plugins",
+  ],
+  [
+    "oh-my-opencode",
+    "opencode-antigravity-auth",
+    "oh-my-opencode intercepts the Google auth flow antigravity-auth also provides",
+  ],
+  [
+    "opencode-supermemory",
+    "oh-my-opencode",
+    "both hook auto-compact; supermemory documents the clash with oh-my-opencode",
+  ],
+]
+
 interface Stored {
   targets: Record<string, string>
   labels: Record<string, string>
@@ -90,6 +115,13 @@ interface RowMeta {
   entryPaths: string[]
   /** Directive strings whose removal re-enables this row. */
   needles: string[]
+  /**
+   * Distinct resolved targets that declare this row's id. More than one means
+   * OpenCode's supervisor will keep the first and fail the rest with
+   * `Duplicate plugin ID: <id>` (the `packages` map is keyed by target, so
+   * the same target in two files is fine - only different paths clash).
+   */
+  targets: string[]
 }
 
 type InternalRow = PluginRow & { meta: RowMeta }
@@ -199,6 +231,40 @@ function partsOf(plugin: PluginInfoLike): string[] {
 function isSelf(id: string, target: string): boolean {
   if (id === "token-optimizer") return true
   return target.toLowerCase().includes("token-optimizer")
+}
+
+/** Exact match against a row's resolved id or declared package/path. */
+function matchesName(row: PluginRow, name: string): boolean {
+  return row.id === name || row.label === name
+}
+
+function joinConflict(existing: string, next: string): string {
+  return existing ? `${existing} · ${next}` : next
+}
+
+/**
+ * Fills `row.conflict` for every row. Duplicate-id detection runs whenever a
+ * row is enabled and >1 distinct target declares it; package-pair notes only
+ * when both sides exist and both are enabled (a disabled plugin cannot fight
+ * with anything).
+ */
+function applyConflicts(rows: InternalRow[]): void {
+  for (const row of rows) {
+    if (!row.enabled || row.meta.targets.length < 2) continue
+    row.conflict = joinConflict(
+      row.conflict,
+      `duplicate id "${row.id || row.key}" declared by ${row.meta.targets.length} paths ` +
+        `(${row.meta.targets.join(", ")}) - OpenCode loads one and reports the rest as ` +
+        `"Duplicate plugin ID"; remove one entry`,
+    )
+  }
+  for (const [a, b, note] of CONFLICT_PAIRS) {
+    const rowA = rows.find((row) => matchesName(row, a))
+    const rowB = rows.find((row) => matchesName(row, b))
+    if (!rowA || !rowB || !rowA.enabled || !rowB.enabled) continue
+    rowA.conflict = joinConflict(rowA.conflict, `conflicts with ${rowB.label}: ${note}`)
+    rowB.conflict = joinConflict(rowB.conflict, `conflicts with ${rowA.label}: ${note}`)
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -360,6 +426,7 @@ function buildRows(
     const existing = rows.get(key)
     if (existing) {
       if (!existing.meta.entryPaths.includes(add.doc.path)) existing.meta.entryPaths.push(add.doc.path)
+      if (!existing.meta.targets.some((t) => norm(t) === norm(add.target))) existing.meta.targets.push(add.target)
       for (const needle of [`-${add.raw}`, `-${add.target}`]) {
         if (!existing.meta.needles.includes(needle)) existing.meta.needles.push(needle)
       }
@@ -405,7 +472,8 @@ function buildRows(
           : failed
             ? plugin?.state.error ?? ""
             : "",
-      meta: { entryPaths: [add.doc.path], needles: [...needles] },
+      conflict: "",
+      meta: { entryPaths: [add.doc.path], needles: [...needles], targets: [add.target] },
     })
   }
 
@@ -442,7 +510,8 @@ function buildRows(
           : failed
             ? plugin.state.error ?? ""
             : "",
-      meta: { entryPaths: [], needles: [`-${plugin.id}`] },
+      conflict: "",
+      meta: { entryPaths: [], needles: [`-${plugin.id}`], targets: [] },
     })
   }
 
@@ -461,11 +530,14 @@ function buildRows(
       status: "disabled",
       locked: GUARDED.has(r.target),
       detail: GUARDED.has(r.target) ? "built into OpenCode" : known ? "disabled - not loaded" : "no matching plugin",
-      meta: { entryPaths: [], needles: [`-${r.target}`] },
+      conflict: "",
+      meta: { entryPaths: [], needles: [`-${r.target}`], targets: [] },
     })
   }
 
-  return [...rows.values()]
+  const list = [...rows.values()]
+  applyConflicts(list)
+  return list
 }
 
 function toPublic(row: InternalRow): PluginRow {
@@ -480,6 +552,7 @@ function toPublic(row: InternalRow): PluginRow {
     status: row.status,
     locked: row.locked,
     detail: row.detail,
+    conflict: row.conflict,
   }
 }
 

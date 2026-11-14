@@ -396,6 +396,10 @@ function buildOptions(features, routingModel) {
           trimLines: false,
           dedupeWindow: features.dedupe === false ? 0 : 4,
           dedupeMinChars: 1500,
+          compactJson: true,
+          collapseTable: true,
+          scrubBase64: false,
+          collapseRepeats: false,
           exclude: ["write", "edit", "apply_patch"],
         }
       : {
@@ -407,6 +411,10 @@ function buildOptions(features, routingModel) {
           trimLines: false,
           dedupeWindow: features.dedupe === false ? 0 : 4,
           dedupeMinChars: 1500,
+          compactJson: false,
+          collapseTable: false,
+          scrubBase64: false,
+          collapseRepeats: false,
           exclude: ["write", "edit", "apply_patch"],
         },
     rotation: {

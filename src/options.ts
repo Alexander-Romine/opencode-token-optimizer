@@ -29,6 +29,17 @@ export interface ToolOptions {
   dedupeWindow: number
   /** Never dedupe results smaller than this many characters. */
   dedupeMinChars: number
+  /**
+   * Lossless: collapse insignificant whitespace when a whole tool result is
+   * one JSON value (parse-gated; unparseable text is left untouched).
+   */
+  compactJson: boolean
+  /** Lossless: strip markdown table alignment padding outside code fences. */
+  collapseTable: boolean
+  /** Lossy: elide base64 runs of >=500 chars with an honest marker. */
+  scrubBase64: boolean
+  /** Lossy: collapse runs of >=3 identical lines of >=80 chars to one + count. */
+  collapseRepeats: boolean
   /** Tool names the compressor leaves untouched. */
   exclude: string[]
 }
@@ -101,6 +112,10 @@ const DEFAULT: Options = {
     trimLines: false,
     dedupeWindow: 4,
     dedupeMinChars: 1_500,
+    compactJson: true,
+    collapseTable: true,
+    scrubBase64: false,
+    collapseRepeats: false,
     exclude: ["write", "edit", "apply_patch"],
   },
   routing: { agents: {} },
@@ -184,6 +199,10 @@ export function parseOptions(raw: unknown): Options {
     marker: str(read(toolRaw, "marker")),
     dedupeWindow: clamp(num(read(toolRaw, "dedupeWindow", "dedupe_window"), DEFAULT.tool.dedupeWindow), 0, 64),
     dedupeMinChars: Math.max(0, num(read(toolRaw, "dedupeMinChars", "dedupe_min_chars"), DEFAULT.tool.dedupeMinChars)),
+    compactJson: bool(read(toolRaw, "compactJson", "compact_json"), DEFAULT.tool.compactJson),
+    collapseTable: bool(read(toolRaw, "collapseTable", "collapse_table"), DEFAULT.tool.collapseTable),
+    scrubBase64: bool(read(toolRaw, "scrubBase64", "scrub_base64"), DEFAULT.tool.scrubBase64),
+    collapseRepeats: bool(read(toolRaw, "collapseRepeats", "collapse_repeats"), DEFAULT.tool.collapseRepeats),
     exclude: stringList(read(toolRaw, "exclude"), DEFAULT.tool.exclude),
   }
 

@@ -6,6 +6,7 @@
  * compressor with the plugin's default options, and reports:
  *   - char reduction per sample (what the model no longer has to read)
  *   - meaningful-content retention (how much real information survived)
+ *   - structural transforms (compactJson/collapseTable/scrub/collapseRepeats)
  *   - native vs fallback throughput
  *   - dedupe stub size vs repeat size
  *   - metering walk cost on a large request
@@ -13,6 +14,8 @@
  * Run:  node benchmark/bench.mjs
  */
 import { api, fallbackApi, nativeAvailable, nativeDetail } from "../src/native.ts"
+import { transformText } from "../src/tools.ts"
+import { parseOptions } from "../src/options.ts"
 
 // Mirror of meter.ts estimateChars (inlined: Node strip-only mode cannot
 // parse meter.ts's parameter properties). Walking live objects, O(values).
@@ -144,6 +147,36 @@ function cleanSourceSmall() {
   return sourceFile(9000) // under the 24k budget: should be lossless
 }
 
+function markdownTable(target) {
+  const out = ["| ID | Name | Status | Latency (ms) | Notes |", "| --- | --- | --- | --- | --- |"]
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(
+      `| ${String(i).padStart(5)} | ${pick(WORDS).padEnd(14)} | ${pick(WORDS).padEnd(10)} | ${(rnd() * 1000).toFixed(2).padStart(9)} | ${pick(WORDS)} ${pick(WORDS)} |`,
+    )
+    i++
+  }
+  return out.join("\n")
+}
+
+function base64Blob(target) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  let out = ""
+  while (out.length < target) out += alphabet[Math.floor(rnd() * alphabet.length) % alphabet.length]
+  return `${out}=` // padding guarantees the base64-only signal the scrubber requires
+}
+
+function repeatedLog(target) {
+  const out = []
+  let i = 0
+  while (out.join("\n").length < target) {
+    if (i % 25 === 0) out.push(`INFO  checkpoint ${i} written to disk in ${(rnd() * 90 + 10).toFixed(1)}ms`)
+    else out.push("WARN  retrying request after upstream timeout (attempt 3/5): connection reset by peer, backing off 2000ms")
+    i++
+  }
+  return out.join("\n")
+}
+
 /** Typical sizes an agent actually produces within a turn. */
 function typicalSuite() {
   return [
@@ -260,6 +293,39 @@ const small = suites[0][1][1][1]
 const smallResult = api.compress(small, DEFAULTS)
 const lossless = smallResult.text === small
 console.log(`\ntypical 9k file read returned byte-identical: ${lossless ? "yes (zero information loss)" : "no"}`)
+
+/* ------------------------------------------------------------------ *
+ * Structural transforms (transformText: after RTK, before compress)
+ * ------------------------------------------------------------------ */
+
+const toolDefaults = parseOptions({}).tool
+
+console.log(`\n== STRUCTURAL TRANSFORMS (TS side, before api.compress) ==`)
+console.log("sample".padEnd(46) + "in".padStart(9) + "out".padStart(9) + "cut%".padStart(8) + "kept%".padStart(8) + "  notes")
+console.log("-".repeat(92))
+
+function transformRow(label, input, tool, opts, note) {
+  const out = transformText(input, tool, opts)
+  const mIn = meaningful(input)
+  const mOut = meaningful(out)
+  const kept = mIn === 0 ? 100 : (mOut / mIn) * 100
+  console.log(
+    label.padEnd(46) +
+      String(input.length).padStart(9) +
+      String(out.length).padStart(9) +
+      pct(input.length, out.length).toFixed(1).padStart(8) +
+      kept.toFixed(1).padStart(8) +
+      "  " + note,
+  )
+  return { in: input.length, out: out.length, kept }
+}
+
+transformRow("markdown table (collapseTable, lossless)", markdownTable(12_000), "bash", toolDefaults, "padding stripped, rendering identical")
+transformRow("pretty JSON (compactJson, lossless)", jsonDump(20_000), "bash", toolDefaults, "re-serialized, parse-gated")
+transformRow("file read via read tool (skipped)", sourceFile(9_000), "read", toolDefaults, "byte-faithful for edit oldString")
+transformRow("source file via bash (nothing fires)", sourceFile(9_000), "bash", toolDefaults, "not JSON/table - untouched")
+transformRow("base64 blob (scrubBase64, lossy)", base64Blob(6_000), "bash", { ...toolDefaults, scrubBase64: true }, "opt-in; marker says what was dropped")
+transformRow("repeated log lines (collapseRepeats, lossy)", repeatedLog(12_000), "bash", { ...toolDefaults, collapseRepeats: true }, "opt-in; runs of >=3 identical long lines")
 
 /* ------------------------------------------------------------------ *
  * Dedupe: identical repeated read

@@ -1,8 +1,9 @@
 /**
- * Tool result optimization: compression, verified dedupe, and savings accounting.
+ * Tool result optimization: compression, verified dedupe, structural
+ * reductions, and savings accounting.
  *
  * This is where most of the tokens actually go - tool output is typically the
- * majority of an agent's context. Three transformations apply, in order:
+ * majority of an agent's context. Transformations apply, in order:
  *
  *  1. **Dedupe (verified).** The result is hashed. If the same tool produced a
  *     byte-identical result within the last `dedupeWindow` calls, the repeat is
@@ -10,10 +11,15 @@
  *     produced content, this can never hide a difference - it only removes a
  *     true duplicate that is still verifiably in context.
  *
- *  2. **Clean.** ANSI/control bytes stripped, CR normalized, blank runs
+ *  2. **Structural (see `transformText`).** Lossless by default: whole-JSON
+ *     whitespace collapse, markdown table padding strip. Opt-in lossy: base64
+ *     scrub, repeated-line collapse. Runs after RTK, before compression, and
+ *     never on the `read` tool (file bytes must stay faithful for `edit`).
+ *
+ *  3. **Clean.** ANSI/control bytes stripped, CR normalized, blank runs
  *     collapsed, optional trailing-whitespace trim. Pure noise removal.
  *
- *  3. **Truncate.** Head + tail kept inside `maxChars` with a marker saying how
+ *  4. **Truncate.** Head + tail kept inside `maxChars` with a marker saying how
  *     much was dropped, so the model always knows content is missing.
  *
  * Everything hot goes through the Rust addon; see `native.ts`.
@@ -21,8 +27,118 @@
 // Explicit .ts extensions so Node's strip-only test runner can resolve them;
 // bundler-style resolvers (OpenCode/Bun) accept them too.
 import { api } from "./native.ts"
-import { compressOptions, type Options } from "./options.ts"
+import { compressOptions, type Options, type ToolOptions } from "./options.ts"
 import { reduceCommand } from "./rtk.ts"
+
+/** Minimum length of a base64 run the scrubber will consider. */
+const BASE64_MIN = 500
+/** Shortest line `collapseRepeats` touches - `}` runs and rules never collapse. */
+const REPEAT_MIN_LINE = 80
+/** Identical-line run length needed before collapsing (2 saves too little). */
+const REPEAT_MIN_RUN = 3
+
+/**
+ * Lossless: when a whole tool result is exactly one JSON value, re-serialize
+ * it without insignificant whitespace. Parse-gated in both directions: text
+ * that is not one JSON document (JSONL, prose-wrapped, truncated) is untouched.
+ */
+function compactJson(text: string): string {
+  const head = text.trimStart()
+  const first = head.charAt(0)
+  if (first !== "{" && first !== "[") return text
+  const last = text.trimEnd().slice(-1)
+  if (last !== "}" && last !== "]") return text
+  try {
+    const out = JSON.stringify(JSON.parse(text))
+    return out !== null && out.length < text.length ? out : text
+  } catch {
+    return text
+  }
+}
+
+/**
+ * Lossless: strip alignment padding from markdown table rows so cells render
+ * identically with fewer characters. Skips fenced code blocks and rows with
+ * escaped pipes (splitting those would corrupt cell content).
+ */
+function collapseTable(text: string): string {
+  const lines = text.split("\n")
+  let fence = false
+  let changed = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const trimmed = line.trim()
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      fence = !fence
+      continue
+    }
+    if (fence || !trimmed.startsWith("|") || !trimmed.endsWith("|")) continue
+    if (line.includes("\\|")) continue
+    const lead = line.slice(0, line.length - line.trimStart().length)
+    const cells = trimmed.split("|")
+    if (cells.length < 3 || !cells.some((cell) => cell.trim() !== "")) continue
+    const next = lead + cells.map((cell) => cell.trim()).join("|")
+    if (next.length < line.length) {
+      lines[i] = next
+      changed = true
+    }
+  }
+  return changed ? lines.join("\n") : text
+}
+
+/**
+ * Lossy (opt-in): elide base64 blobs with an honest marker. Requires a
+ * base64-only signal (+, / or padding) inside the run so long hex/word
+ * strings are never touched.
+ */
+function scrubBase64(text: string): string {
+  const pattern = new RegExp(`[A-Za-z0-9+/]{${BASE64_MIN},}={0,2}`, "g")
+  return text.replace(pattern, (run) =>
+    /[+/=]/.test(run) ? `[token-optimizer: base64 blob of ${run.length} chars elided]` : run,
+  )
+}
+
+/**
+ * Lossy (opt-in): collapse runs of identical long lines to the first line
+ * plus a count marker. The length gate keeps structural noise (`}`, `---`)
+ * in logs and file listings untouched.
+ */
+function collapseRepeats(text: string): string {
+  const lines = text.split("\n")
+  const out: string[] = []
+  let changed = false
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i]!
+    let j = i + 1
+    if (line.trim().length >= REPEAT_MIN_LINE) {
+      while (j < lines.length && lines[j] === line) j++
+    }
+    if (j - i >= REPEAT_MIN_RUN) {
+      out.push(line, `[token-optimizer: ${j - i - 1} more identical lines omitted]`)
+      changed = true
+      i = j
+    } else {
+      out.push(line)
+      i++
+    }
+  }
+  return changed ? out.join("\n") : text
+}
+
+/**
+ * Structural reductions for one text item, applied after RTK and before
+ * compression. `read` is skipped: file contents must reach the model
+ * byte-faithful so `edit` oldString matching still works against them.
+ */
+export function transformText(text: string, tool: string, opts: ToolOptions): string {
+  if (tool === "read") return text
+  let out = text
+  if (opts.compactJson) out = compactJson(out)
+  if (opts.collapseTable) out = collapseTable(out)
+  if (opts.collapseRepeats) out = collapseRepeats(out)
+  if (opts.scrubBase64) out = scrubBase64(out)
+  return out
+}
 
 export interface ToolCallOutcome {
   /** Characters the tool produced before any optimization. */
@@ -153,12 +269,17 @@ export class ToolOptimizer {
       }
 
       const compressed = api.compress(
-        // RTK reduces only what the model actually receives. The dedupe hash
-        // above stays over the original, so a "byte-identical" claim can never
-        // be satisfied by two different outputs that reduce to the same text.
-        command && this.options.rtk.enabled
-          ? reduceCommand(command, original, this.options.rtk)
-          : original,
+        // RTK and the structural transforms reduce only what the model
+        // actually receives. The dedupe hash above stays over the original,
+        // so a "byte-identical" claim can never be satisfied by two different
+        // outputs that reduce to the same text.
+        transformText(
+          command && this.options.rtk.enabled
+            ? reduceCommand(command, original, this.options.rtk)
+            : original,
+          tool,
+          this.options.tool,
+        ),
         compressOpts,
       )
       item.text = compressed.text

@@ -37,7 +37,7 @@ function shortPath(file: string): string {
 }
 
 function rowDescription(row: PluginRow): string {
-  return [row.kind, row.status, row.file ? shortPath(row.file) : "", row.detail].filter(Boolean).join(" · ")
+  return [row.kind, row.status, row.file ? shortPath(row.file) : "", row.detail, row.conflict].filter(Boolean).join(" · ")
 }
 
 export default Plugin.define({
@@ -118,8 +118,19 @@ export default Plugin.define({
             a.file === b.file ? a.label.localeCompare(b.label) : a.file.localeCompare(b.file),
           )
 
-        const toggle = (key: string, enabled: boolean) =>
-          setRows((current) => current.map((row) => (row.key === key ? { ...row, enabled } : row)))
+        const toggle = (key: string, enabled: boolean) => {
+          const row = rows().find((candidate) => candidate.key === key)
+          // Turning a conflicted plugin back on warns immediately; the Apply
+          // toast re-checks against the config that was actually written.
+          if (enabled && row?.conflict) {
+            ctx.toast.show({
+              title: "Plugin conflict",
+              description: `${row.label}: ${row.conflict}`,
+              variant: "error",
+            })
+          }
+          setRows((current) => current.map((candidate) => (candidate.key === key ? { ...candidate, enabled } : candidate)))
+        }
 
         const refresh = async () => {
           accept((await optimizer.pluginsList({})) as PluginsListResult)
@@ -132,10 +143,20 @@ export default Plugin.define({
           try {
             const result = (await optimizer.pluginsSet({ changes })) as PluginsSetResult
             accept(result)
+            const conflicted = result.rows.filter((row) => row.enabled && row.conflict)
             if (result.errors.length) {
               ctx.toast.show({
                 title: "Plugins",
                 description: result.errors.slice(0, 3).join(" · "),
+                variant: "error",
+              })
+            } else if (conflicted.length) {
+              ctx.toast.show({
+                title: "Plugins - conflict",
+                description:
+                  `${changes.length} change(s) applied` +
+                  (result.backups.length ? ` · backup: ${result.backups.map((file) => shortPath(file)).join(", ")}` : "") +
+                  ` · ${conflicted.slice(0, 2).map((row) => `${row.label}: ${row.conflict}`).join(" · ")}`,
                 variant: "error",
               })
             } else {

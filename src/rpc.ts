@@ -85,6 +85,11 @@ export interface PluginRow {
   locked: boolean
   /** Failure text or lock reason; empty when none. */
   detail: string
+  /**
+   * Documented conflict with another installed plugin (duplicate id from two
+   * config targets, or a known package clash); empty when none.
+   */
+  conflict: string
 }
 
 /** One pending toggle in a `/plugins` batch. */
@@ -123,8 +128,9 @@ const pluginRowSchema: Rpc.PortableValueSchema = {
     status: { type: "string" },
     locked: { type: "boolean" },
     detail: { type: "string" },
+    conflict: { type: "string" },
   },
-  required: ["key", "label", "id", "kind", "file", "enabled", "parts", "status", "locked", "detail"],
+  required: ["key", "label", "id", "kind", "file", "enabled", "parts", "status", "locked", "detail", "conflict"],
   additionalProperties: false,
 }
 

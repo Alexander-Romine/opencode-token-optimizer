@@ -174,6 +174,10 @@ if (-not $SkipConfig) {
                 trimLines       = $false
                 dedupeWindow    = 4
                 dedupeMinChars  = 1500
+                compactJson     = $true
+                collapseTable   = $true
+                scrubBase64     = $false
+                collapseRepeats = $false
                 exclude         = @("write", "edit", "apply_patch")
             }
             rotation       = [ordered]@{

@@ -1,6 +1,6 @@
 # token-optimizer
 
-A token-efficiency plugin for OpenCode: smaller tool outputs, RTK-style command-output reduction, verified dedupe, terse responses, and one-key session rotation so agentic sessions cost less and run longer.
+A token-efficiency plugin for OpenCode: smaller tool outputs, RTK-style command-output reduction, verified dedupe, lossless JSON/table transforms, terse responses, and one-key session rotation so agentic sessions cost less and run longer.
 
 **Download:** [Releases page](../../releases)
 
@@ -83,7 +83,7 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
 }
 ```
 
-Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette) and **`/rotate`** to start a fresh seeded session. In Desktop, **`/plugins`** opens the whole-plugin panel: checkboxes that switch any installed plugin on or off by writing `-<id>` directives into `opencode.json` - one timestamped backup per file, merge never touches anything else, JSONC files are listed but never rewritten, and config hot-reload means no restart.
+Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette) and **`/rotate`** to start a fresh seeded session. In Desktop, **`/plugins`** opens the whole-plugin panel: checkboxes that switch any installed plugin on or off by writing `-<id>` directives into `opencode.json` - one timestamped backup per file, merge never touches anything else, JSONC files are listed but never rewritten, and config hot-reload means no restart. Rows also carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) in their description, with a toast when you toggle or apply one - see [Plugin conflicts](#plugin-conflicts).
 
 ## Build
 
@@ -95,7 +95,7 @@ npm run typecheck
 npm run build:native      # explicit rebuild of the Rust addon
 npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
-node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + /plugins checks
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + /plugins + conflicts + transforms
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
 
@@ -115,7 +115,7 @@ All numbers measured on Windows x64 with `node benchmark/bench.mjs` using the pl
 | pretty JSON (crosses budget) | 32,407 | 24,000 | 25.9% | 74.1% |
 | **suite total** | **88,903** | **75,962** | **14.6%** | **90.5%** |
 
-Clean outputs under the budget are returned **byte-identical** (verified in the suite). The only lossless-but-smaller case is noise: ANSI color codes, control bytes, CRLF, blank runs - stripped with **100% of real content kept**.
+Clean outputs under the budget are returned **byte-identical** (verified in the suite). Lossless-but-smaller happens only where meaning cannot change: ANSI color codes, control bytes, CRLF, blank runs, JSON whitespace, table padding - stripped with **100% of real content kept**.
 
 **Oversized reads** (what blows up a context window):
 
@@ -150,6 +150,25 @@ Quality rules that hold by construction:
 - Unknown formats (anything RTK doesn't recognise) return the input unchanged - it can only ever reduce output it fully understands.
 - RTK runs **before** compression, so the model never sees the pre-RTK text at all.
 
+**Structural transforms** (TypeScript side, after RTK and before compression; `tool.*` options; measured by `node benchmark/bench.mjs`):
+
+| Sample | In | Out | Cut | Content kept | Rule |
+| --- | ---: | ---: | ---: | ---: | --- |
+| markdown table (`collapseTable`, **on**) | 12,030 | 7,112 | 40.9% | 100% | alignment padding stripped, rendering identical |
+| pretty JSON (`compactJson`, **on**) | 32,425 | 20,064 | 38.1% | 100% | re-serialized only when the whole result parses as one JSON value |
+| file read through the `read` tool | 9,004 | 9,004 | 0% | 100% | **never transformed** - bytes stay faithful for `edit` matching |
+| source code via `bash` | 9,004 | 9,004 | 0% | 100% | not JSON/table - untouched |
+| base64 blob (`scrubBase64`, off by default) | 6,001 | 51 | 99.2% | 0.7% | lossy: replaced with an honest length marker |
+| repeated log lines (`collapseRepeats`, off by default) | 12,101 | 1,014 | 91.6% | 8.4% | lossy: runs of >=3 identical >=80-char lines -> one line + count |
+
+Quality rules that hold by construction:
+
+- **The two default-on rules are lossless.** JSON whitespace and table alignment padding carry no meaning; JSON must parse (JSONL, prose-wrapped or truncated text is skipped), and tables skip fenced code blocks and escaped-pipe rows so cell content can never be corrupted.
+- **The two opt-in rules are lossy and say so** - the marker they leave names what was dropped (`base64 blob of 6001 chars elided`, `24 more identical lines omitted`).
+- **`read` output is excluded entirely**, so what you read is byte-for-byte what `edit`'s `oldString` must match.
+- Transforms run after the dedupe hash is computed over the original bytes - a whitespace-variant of the same JSON can never satisfy the "byte-identical" dedupe claim (smoke-tested).
+- Runs after RTK, before `api.compress`; the Rust hot path and its byte-identical JS fallback are unchanged.
+
 **Cost of the savings** (the honest part):
 
 - **Under the budget: zero quality loss.** Byte-identical for clean text; noise-only removal (ANSI/whitespace) for logs. Measured 100% content kept.
@@ -169,12 +188,13 @@ Quality rules that hold by construction:
 ## Features
 
 - Tool output is cleaned and capped in Rust: ANSI/control stripping, CRLF normalization, blank-run collapse, head+tail truncation with an explicit omission marker
+- **Structural transforms** (`tool.compactJson` + `tool.collapseTable` on by default, lossless; `tool.scrubBase64` + `tool.collapseRepeats` opt-in, lossy with honest markers): whole-JSON whitespace collapse and markdown table padding strip before compression; the `read` tool is never touched
 - Byte-identical repeat results are replaced with a verified stub (per-session, window of 4, configurable)
 - **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
 - **Caveman terse responses** (`caveman.enabled`, off by default): a system-prompt instruction to answer first with no filler - code, paths and errors stay verbatim
 - `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
 - `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - works in the TUI **and** in Desktop (command palette), via the bundled GUI part
-- `/plugins` (Desktop) toggles whole plugins on/off: rows join config entries, the live inventory and leftover `-<id>` directives; built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
+- `/plugins` (Desktop) toggles whole plugins on/off: rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled (row description + toggle/apply toasts); built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)
 - Optional output-token budget (`budgetMaxTokens`) pinned to every agent-loop request
@@ -199,6 +219,18 @@ The GUI installer can optionally add these third-party plugins (all MIT, maintai
 | `cc-switch` | Desktop app for managing coding-tool providers | not a config plugin - the installer opens its GitHub releases page |
 
 Companions are merged into your existing `opencode.json` exactly like the main plugin: timestamped backup first, never overwritten, and checking one that's already installed is a no-op.
+
+## Plugin conflicts
+
+`/plugins` surfaces two kinds of conflict. Both are computed from what is actually installed and documented by the plugins involved - nothing is guessed:
+
+1. **Duplicate plugin id** - the same plugin declared by two *different* paths (for example a global entry and a project entry pointing at different copies). OpenCode's supervisor keeps the first occurrence and reports the rest as `Duplicate plugin ID: <id>`; the panel flags the row with every path it was declared by and tells you to remove one entry. The same package listed in two config files is *not* a clash - only distinct paths are.
+2. **Documented package clashes** - exact package-name matches taken from the pairs' own documentation, shown only while **both** plugins are enabled:
+   - `opencode-gemini-auth` + `opencode-antigravity-auth` - both handle Google OAuth; antigravity-auth's docs say to remove all gemini-auth plugins
+   - `oh-my-opencode` + `opencode-antigravity-auth` - both intercept the Google auth flow
+   - `opencode-supermemory` + `oh-my-opencode` - both hook auto-compact (documented in supermemory's README)
+
+Matching is exact: `oh-my-opencode-slim` is a different package (it removed the bundled auth proxies and compact hooks) and never triggers the `oh-my-opencode` rules. Quota, history-search and supermemory-vs-rotation were checked and have no real overlap - they are not flagged.
 
 ## Tech Stack
 
