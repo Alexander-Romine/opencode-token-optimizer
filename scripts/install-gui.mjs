@@ -14,9 +14,15 @@
  *   - plugin options are written explicitly (rtk/caveman keys included)
  *
  * Companion plugins are third-party, all MIT. Config-level ones are merged
- * into the plugins array; Exa becomes an MCP server entry; `agents` is cloned
- * and generated locally (needs git + uv); cc-switch is a desktop app, so the
- * installer opens its releases page instead of pretending to configure it.
+ * into the plugins array - checked adds, UNCHECKED REMOVES (the page
+ * pre-checks whatever is installed, so an unchecked box is deliberate).
+ * Exa becomes an MCP server entry; it is removed only when its URL still
+ * matches what this installer writes (custom entries are kept). `agents` is
+ * cloned and generated locally (needs git + uv). cc-switch is a desktop
+ * app: checked downloads and installs the latest Windows MSI from GitHub
+ * Releases (one UAC prompt), unchecked uninstalls it; other platforms just
+ * open the releases page. RETIRED companions (superseded or deprecated) are
+ * always stripped from the config when found.
  *
  * Flags:
  *   --port N          fixed port (default: ephemeral)
@@ -108,22 +114,6 @@ const COMPANIONS = [
     license: "MIT",
   },
   {
-    id: "supermemory",
-    pkg: "opencode-supermemory",
-    label: "opencode-supermemory",
-    desc: "Persistent cross-session memory for your agents, powered by Supermemory.",
-    license: "MIT",
-    note: "needs a Supermemory account",
-  },
-  {
-    id: "gemini",
-    pkg: "opencode-gemini-auth",
-    label: "opencode-gemini-auth",
-    desc: "Google Gemini Code Assist OAuth login for eligible organization subscriptions.",
-    license: "MIT",
-    note: "needs an eligible Google subscription",
-  },
-  {
     id: "antigravity",
     pkg: "opencode-antigravity-auth",
     label: "opencode-antigravity-auth",
@@ -145,15 +135,36 @@ const COMPANIONS = [
     label: "agents (wshobson)",
     desc: "200+ specialist agents, 185 skills and 105 workflows, cloned and generated into your OpenCode config.",
     license: "MIT",
-    note: "requires git + uv (astral.sh)",
+    note: "requires git + uv (astral.sh); unchecking leaves an existing clone in place",
   },
   {
     id: "ccswitch",
     special: "ccswitch",
     label: "cc-switch",
-    desc: "Desktop app for managing coding-tool provider configuration. Not an opencode.json plugin: the installer opens its releases page.",
+    desc: "Desktop app for managing coding-tool provider configuration for many CLIs. Not an opencode.json plugin: the installer downloads and runs the Windows MSI from GitHub Releases.",
     license: "MIT",
-    note: "desktop app - opens GitHub releases",
+    note: "desktop app - Windows installs the MSI (UAC prompt) and unchecking uninstalls it; other platforms open releases",
+  },
+]
+
+/**
+ * Offerings removed on purpose - superseded or deprecated. They no longer
+ * appear as checkboxes; every install strips them from the config when found.
+ * Evidence: supermemory is the heavier memory/search overlap (external
+ * account, auto-compact hooks) vs local history-search; Google deprecated
+ * Gemini Code Assist consumer OAuth in June 2026 and antigravity-auth's own
+ * docs say to remove gemini-auth plugins.
+ */
+const RETIRED = [
+  {
+    pkg: "opencode-supermemory",
+    label: "opencode-supermemory",
+    reason: "superseded by opencode-history-search - local, no account, no compact-hook clashes",
+  },
+  {
+    pkg: "opencode-gemini-auth",
+    label: "opencode-gemini-auth",
+    reason: "Google deprecated Gemini Code Assist consumer OAuth (June 2026); conflicts with antigravity-auth",
   },
 ]
 
@@ -379,6 +390,45 @@ function mergeExa(config) {
   return true
 }
 
+/** Base package name: strips a `@version` suffix, keeps scoped (`@scope/name`) shape. */
+function basePackage(entry) {
+  const p = entryPackage(entry)
+  if (!p) return null
+  if (p.startsWith("@")) {
+    const at = p.indexOf("@", 1)
+    return at > 0 ? p.slice(0, at) : p
+  }
+  const at = p.indexOf("@")
+  return at > 0 ? p.slice(0, at) : p
+}
+
+/**
+ * Removes every `plugins[]` entry whose package matches `pkg` (version
+ * suffixes ignored). Never touches `-<id>` disable directives or entries
+ * registered by path/URL - only exact npm package names are claimed.
+ */
+function removeCompanion(config, pkg) {
+  if (!Array.isArray(config.plugins)) return false
+  const before = config.plugins.length
+  config.plugins = config.plugins.filter((entry) => basePackage(entry) !== pkg)
+  return config.plugins.length < before
+}
+
+/**
+ * Removes the managed MCP entry only when it still matches what this
+ * installer writes; a customized server (different URL) is kept.
+ * Returns { removed } or { kept: true }.
+ */
+function removeExa(config, mcp) {
+  const servers = config.mcp && typeof config.mcp === "object" && !Array.isArray(config.mcp) ? config.mcp.servers : null
+  const entry = servers && typeof servers === "object" ? servers[mcp.name] : null
+  if (!entry) return { removed: false }
+  const ours = typeof entry === "object" && !Array.isArray(entry) && entry.url === mcp.url
+  if (!ours) return { removed: false, kept: true }
+  delete servers[mcp.name]
+  return { removed: true }
+}
+
 /** Explicit options for every feature flag - mirrors install.ps1 defaults. */
 function buildOptions(features, routingModel) {
   const compress = features.compress !== false
@@ -509,6 +559,89 @@ async function installAgents(emit) {
 }
 
 /* ------------------------------------------------------------------ *
+ * cc-switch: a real desktop-app install, not just a link
+ * ------------------------------------------------------------------ */
+
+const CCSWITCH_REPO = "farion1231/cc-switch"
+
+async function openCCSwitchReleases(emit, why) {
+  emit("info", `cc-switch: ${why} - opening https://github.com/${CCSWITCH_REPO}/releases`)
+  openBrowser(`https://github.com/${CCSWITCH_REPO}/releases`)
+  return false
+}
+
+/** Downloads the latest Windows MSI and installs it silently (one UAC prompt). */
+async function installCCSwitch(emit) {
+  if (process.platform !== "win32") {
+    emit("info", "cc-switch: automatic install is Windows-only - opening the releases page.")
+    emit("info", "macOS: brew install --cask cc-switch · Linux: .deb or .AppImage from releases")
+    openBrowser(`https://github.com/${CCSWITCH_REPO}/releases`)
+    return false
+  }
+
+  emit("info", "cc-switch: looking up the latest release ...")
+  let release
+  try {
+    const res = await fetch(`https://api.github.com/repos/${CCSWITCH_REPO}/releases/latest`, {
+      headers: { "User-Agent": "token-optimizer-installer", Accept: "application/vnd.github+json" },
+    })
+    if (!res.ok) throw new Error(`GitHub API returned ${res.status}`)
+    release = await res.json()
+  } catch (error) {
+    return openCCSwitchReleases(emit, `cannot reach GitHub (${error.message})`)
+  }
+
+  const arm = process.arch === "arm64"
+  const wanted = arm ? /-Windows-arm64\.msi$/ : /-Windows\.msi$/
+  const asset = (release.assets || []).find((a) => wanted.test(a.name))
+  if (!asset) return openCCSwitchReleases(emit, `no ${arm ? "arm64" : "x64"} Windows MSI in ${release.tag_name}`)
+
+  const msi = path.join(os.tmpdir(), asset.name)
+  try {
+    emit("info", `cc-switch: downloading ${asset.name} (${Math.round(asset.size / 1e6)} MB) ...`)
+    const res = await fetch(asset.browser_download_url, {
+      headers: { "User-Agent": "token-optimizer-installer", Accept: "application/octet-stream" },
+    })
+    if (!res.ok) throw new Error(`download returned ${res.status}`)
+    writeFileSync(msi, Buffer.from(await res.arrayBuffer()))
+  } catch (error) {
+    return openCCSwitchReleases(emit, `download failed (${error.message})`)
+  }
+
+  emit("info", "cc-switch: installing silently - approve the UAC prompt ...")
+  const script =
+    `try { $p = Start-Process msiexec.exe -ArgumentList '/i','"${msi}"','/qn','/norestart' ` +
+    `-Verb RunAs -PassThru -Wait -ErrorAction Stop; exit $p.ExitCode } catch { exit 1 }`
+  const code = await run("powershell", ["-NoProfile", "-Command", script], {}, emit)
+  if (code === 0 || code === 3010 || code === 1641) {
+    emit("ok", `cc-switch ${release.tag_name} installed`)
+    return true
+  }
+  return openCCSwitchReleases(emit, `installer exited with code ${code} (UAC declined?)`)
+}
+
+/** Companion of install: uninstall when the box is unchecked. Exit 3 = not installed. */
+async function uninstallCCSwitch(emit) {
+  if (process.platform !== "win32") return false
+  const script = [
+    "$p = Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'CC Switch*' } | Select-Object -First 1",
+    "if (-not $p) { exit 3 }",
+    "try { $pr = Start-Process msiexec.exe -ArgumentList '/x', $p.PSChildName, '/qn','/norestart' -Verb RunAs -PassThru -Wait -ErrorAction Stop; exit $pr.ExitCode } catch { exit 1 }",
+  ].join("; ")
+  const code = await run("powershell", ["-NoProfile", "-Command", script], {}, emit)
+  if (code === 3) {
+    emit("info", "cc-switch: not installed - nothing to remove")
+    return false
+  }
+  if (code === 0 || code === 3010 || code === 1641) {
+    emit("ok", "- cc-switch uninstalled (was unchecked)")
+    return true
+  }
+  emit("warn", `cc-switch: uninstall exited with code ${code} (UAC declined?) - remove it from Windows Settings if you meant to.`)
+  return false
+}
+
+/* ------------------------------------------------------------------ *
  * Install flow
  * ------------------------------------------------------------------ */
 
@@ -546,6 +679,7 @@ async function install(body, emit) {
   }
 
   let added = 0
+  let removed = 0
   for (const c of COMPANIONS) {
     if (!companions[c.id]) continue
     if (c.pkg) {
@@ -562,6 +696,40 @@ async function install(body, emit) {
       } else {
         emit("info", "= Exa MCP already configured")
       }
+    }
+  }
+
+  // Unchecked = remove. The page pre-checks whatever is installed (global or
+  // project), so an unchecked box is a deliberate choice - strip it from THIS
+  // scope's config, with the same backup the rest of the run uses. Explicit
+  // `false` only: callers that omit a key never trigger removal.
+  for (const c of COMPANIONS) {
+    if (companions[c.id] !== false) continue
+    if (c.pkg) {
+      if (removeCompanion(config, c.pkg)) {
+        emit("ok", `- ${c.label} (was unchecked - removed from this config)`)
+        removed++
+      }
+    } else if (c.mcp) {
+      const result = removeExa(config, c.mcp)
+      if (result.removed) {
+        emit("ok", `- ${c.label} (was unchecked - removed from this config)`)
+        removed++
+      } else if (result.kept) {
+        emit("info", `= ${c.label}: kept - your mcp.servers.${c.mcp.name} points somewhere else`)
+      }
+    } else if (c.special === "agents" && existsSync(AGENTS_DIR)) {
+      emit("info", "= agents (wshobson) unchecked - existing clone left in place; delete it to remove")
+    } else if (c.special === "ccswitch") {
+      if (await uninstallCCSwitch(emit)) removed++
+    }
+  }
+
+  // Retired offerings are stripped on every install, checked or not.
+  for (const r of RETIRED) {
+    if (removeCompanion(config, r.pkg)) {
+      emit("ok", `- ${r.label} (retired: ${r.reason})`)
+      removed++
     }
   }
 
@@ -615,11 +783,7 @@ async function install(body, emit) {
 
   // ---- 4. external companions
   if (companions.agents) await installAgents(emit)
-  if (companions.ccswitch) {
-    emit("info", "cc-switch is a desktop app, not an opencode.json plugin - opening its releases page.")
-    emit("info", "Download the installer from https://github.com/farion1231/cc-switch/releases")
-    openBrowser("https://github.com/farion1231/cc-switch/releases")
-  }
+  if (companions.ccswitch) await installCCSwitch(emit)
 
   // ---- 5. smoke test: prove the plugin actually works before you open OpenCode
   emit("info", "running smoke test ...")
@@ -631,7 +795,11 @@ async function install(body, emit) {
   emit("ok", "smoke test passed")
 
   emit("info", "")
-  emit("ok", `Install complete${added ? ` (+ ${added} companion plugin${added > 1 ? "s" : ""})` : ""}.`)
+  emit(
+    "ok",
+    `Install complete${added ? ` (+ ${added} companion${added > 1 ? "s" : ""})` : ""}` +
+      `${removed ? ` (- ${removed} removed)` : ""}.`,
+  )
   emit("info", scope === "global" ? "Restart OpenCode - the plugin loads for every project." : "Start OpenCode from that project directory.")
   emit("info", "In OpenCode Desktop or the TUI run /tokens for the efficiency report.")
   emit("info", "Auto-rotation is ON at 85% of the context window (options.rotation.auto to change).")

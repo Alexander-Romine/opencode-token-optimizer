@@ -42,7 +42,7 @@ ses_77d0c...   topai/glm-5.3-flash               -     4118      892         0  
 
 1. Pick a scope: **global** (every project) or **one project folder**.
 2. Check/uncheck each optimization: compression, dedupe, auto-rotation, RTK, caveman, model routing, native addon.
-3. Optionally check **companion plugins** (see below) - third-party plugins like `oh-my-opencode-slim`, history search, quota, Supermemory, Exa search, auth helpers, and more.
+3. Optionally check **companion plugins** (see below) - third-party plugins like `oh-my-opencode-slim`, history search, quota, Exa search, Antigravity auth, the agents collection, and cc-switch. Checked = added, **unchecked = removed**: installed companions start checked, so unchecking one strips it from that config (timestamped backup first). Custom entries are safe - a hand-modified Exa MCP URL is never removed, and cc-switch (a desktop app) is really installed from its Windows MSI with one UAC prompt, or uninstalled when unchecked.
 4. Press **Install** - progress streams live; it backs up and merges your `opencode.json`, installs deps, builds the native addon + GUI bundle, and runs the smoke test.
 
 The page shows what's already installed and refuses to touch a config it can't parse (JSONC/comments) - it tells you exactly what to add by hand instead. `Uninstall.cmd` reverses the registration.
@@ -96,6 +96,7 @@ npm run build:native      # explicit rebuild of the Rust addon
 npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
 node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + /plugins + conflicts + transforms
+node scripts/e2e-install-test.mjs  # companion add/remove end-to-end against a throwaway config
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
 
@@ -211,14 +212,12 @@ The GUI installer can optionally add these third-party plugins (all MIT, maintai
 | `oh-my-opencode-slim` | Multi-agent orchestration: specialist agents, auto-delegation, model mixing | `plugins[]` entry |
 | `opencode-history-search` | Keyword/regex/fuzzy search over all your OpenCode conversation history | `plugins[]` entry |
 | `opencode-quota` (`@slkiser/opencode-quota`) | Provider quota and usage views: `/quota`, sidebar panel, terminal view | `plugins[]` entry |
-| `opencode-supermemory` | Persistent cross-session memory (needs a Supermemory account) | `plugins[]` entry |
 | `opencode-exa-search` | Web search + page fetch through Exa's hosted MCP endpoint | `mcp.servers.exa` remote entry (schema-verified) |
-| `opencode-gemini-auth` | Gemini Code Assist OAuth for eligible organization subscriptions | `plugins[]` entry |
 | `opencode-antigravity-auth` | Unofficial Google Antigravity OAuth access | `plugins[]` entry |
 | `agents` (wshobson) | 200+ specialist agents, 185 skills, 105 workflows | cloned to `~/.local/share/opencode/ext/` and generated with `uv` (needs git + uv; prints manual steps if either is missing) |
-| `cc-switch` | Desktop app for managing coding-tool providers | not a config plugin - the installer opens its GitHub releases page |
+| `cc-switch` | Desktop app for managing coding-tool providers across many CLIs | downloads `CC-Switch-v*-Windows.msi` from GitHub Releases and installs it silently (one UAC prompt); other platforms open the releases page |
 
-Companions are merged into your existing `opencode.json` exactly like the main plugin: timestamped backup first, never overwritten, and checking one that's already installed is a no-op.
+Companions are merged into your existing `opencode.json` exactly like the main plugin: timestamped backup first, never overwritten, and checking one that's already installed is a no-op. **Unchecking works the other way**: the entry is removed from the config you're installing to (backup first), the managed Exa MCP entry is dropped only while its URL still matches what the installer writes, and unchecking cc-switch uninstalls its MSI. Two offerings were retired and are stripped automatically when found: `opencode-supermemory` (the heavier memory/search overlap - needs an external account and hooks auto-compact, while `opencode-history-search` is local and account-free) and `opencode-gemini-auth` (Google deprecated Gemini Code Assist consumer OAuth in June 2026, and antigravity-auth's own docs say to remove gemini-auth plugins).
 
 ## Plugin conflicts
 
