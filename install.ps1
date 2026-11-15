@@ -178,6 +178,13 @@ if (-not $SkipConfig) {
                 collapseTable   = $true
                 scrubBase64     = $false
                 collapseRepeats = $false
+                collapseStacks  = $false
+                collapseDiff    = $false
+                stripHtml       = $false
+                normalizeTime   = $false
+                shortenPaths    = $false
+                ramCache        = $true
+                ramCacheChars   = 2000000
                 exclude         = @("write", "edit", "apply_patch")
             }
             rotation       = [ordered]@{

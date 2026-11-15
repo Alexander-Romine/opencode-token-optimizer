@@ -8,6 +8,7 @@
 import type { SessionMetrics } from "./meter"
 import type { Options } from "./options"
 import type { SessionSnapshot, TokenUsage } from "./state"
+import type { RamCacheStats } from "./tools"
 
 export interface ReportRow {
   session: SessionSnapshot
@@ -41,6 +42,7 @@ export function buildReport(
   options: Options,
   nativeDetail: string,
   rows: ReportRow[],
+  cache?: RamCacheStats,
 ): string {
   const sorted = [...rows].sort((a, b) => (b.metrics?.updatedAt ?? 0) - (a.metrics?.updatedAt ?? 0))
 
@@ -107,6 +109,19 @@ export function buildReport(
     `tool output    : ${totals.charsIn.toLocaleString()} chars injected`,
     `removed        : ${totals.saved.toLocaleString()} chars (~${savedTokens.toLocaleString()} tokens)`,
     `repeat withheld: ${totals.dedupe}`,
+    ...(cache
+      ? [
+          `ram cache      : ${
+            cache.enabled
+              ? `${cache.hits} hit / ${cache.misses} miss` +
+                (cache.hits + cache.misses > 0
+                  ? ` (${Math.round((cache.hits / (cache.hits + cache.misses)) * 100)}%)`
+                  : "") +
+                `, ${cache.entries} entries, ${cache.chars.toLocaleString()} chars`
+              : "off (options.tool.ramCache)"
+          }`,
+        ]
+      : []),
     ``,
   ]
 

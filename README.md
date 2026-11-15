@@ -1,8 +1,11 @@
 # token-optimizer
 
-A token-efficiency plugin for OpenCode: smaller tool outputs, RTK-style command-output reduction, verified dedupe, lossless JSON/table transforms, terse responses, and one-key session rotation so agentic sessions cost less and run longer.
+[![CI](https://github.com/Alexander-Romine/opencode-token-optimizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexander-Romine/opencode-token-optimizer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Download:** [Releases page](../../releases)
+A token-efficiency plugin for OpenCode: smaller tool outputs, RTK-style command-output reduction, verified dedupe, lossless JSON/table transforms, opt-in lossy transforms (stacks, diffs, HTML, timestamps, paths), a device-RAM pipeline cache, terse responses, and one-key session rotation so agentic sessions cost less and run longer.
+
+**Download:** [Releases page](https://github.com/Alexander-Romine/opencode-token-optimizer/releases)
 
 What `/tokens` shows you (real output from the report code):
 
@@ -26,6 +29,7 @@ cost           : $0.5019
 tool output    : 1,149,991 chars injected
 removed        : 354,052 chars (~88,513 tokens)
 repeat withheld: 9
+ram cache      : 41 hit / 7 miss (85%), 12 entries, 1,842,006 chars
 
 session        model                          peak       in      out    cached       cost     saved
 ---------------------------------------------------------------------------------------------------
@@ -85,6 +89,8 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
 
 Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette) and **`/rotate`** to start a fresh seeded session. In Desktop, **`/plugins`** opens the whole-plugin panel: checkboxes that switch any installed plugin on or off by writing `-<id>` directives into `opencode.json` - one timestamped backup per file, merge never touches anything else, JSONC files are listed but never rewritten, and config hot-reload means no restart. Rows also carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) in their description, with a toast when you toggle or apply one - see [Plugin conflicts](#plugin-conflicts).
 
+**`/optimize`** (Desktop) is the day-to-day settings panel *inside* OpenCode - no separate window: three sections of switches for **Optimizations** (compression, dedupe, rotation, RTK, caveman, RAM cache), **Structural transforms** (all nine `tool.*` transforms) and **Companion plugins** (the config-level ones). Every apply edits `opencode.json` with the same guarantees as the installer - timestamped backup, merge never overwrite, strict JSON only (a JSONC config is refused with a hand-edit hint), retired offerings stripped, unknown keys preserved - and config hot-reload picks the changes up a couple of seconds later. External installs (the agents collection, cc-switch) stay with `Install.cmd`; the panel's footer says so.
+
 ## Build
 
 Requires Node.js 18+; Rust for the native addon.
@@ -95,7 +101,7 @@ npm run typecheck
 npm run build:native      # explicit rebuild of the Rust addon
 npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
-node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + /plugins + conflicts + transforms
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + transforms + RAM cache + /plugins + /optimize + conflicts
 node scripts/e2e-install-test.mjs  # companion add/remove end-to-end against a throwaway config
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
@@ -161,14 +167,21 @@ Quality rules that hold by construction:
 | source code via `bash` | 9,004 | 9,004 | 0% | 100% | not JSON/table - untouched |
 | base64 blob (`scrubBase64`, off by default) | 6,001 | 51 | 99.2% | 0.7% | lossy: replaced with an honest length marker |
 | repeated log lines (`collapseRepeats`, off by default) | 12,101 | 1,014 | 91.6% | 8.4% | lossy: runs of >=3 identical >=80-char lines -> one line + count |
+| stack trace (`collapseStacks`, off by default) | 10,052 | 5,214 | 48.1% | 54.0% | lossy: runs of >=3 identical frames -> one frame + count |
+| HTML page (`stripHtml`, off by default) | 12,242 | 6,173 | 49.6% | 45.1% | lossy: page gate (doctype/`<html>`/`<body>`) - JSX and source untouched |
+| unified diff (`collapseDiff`, off by default) | 14,010 | 9,977 | 28.8% | 74.0% | lossy: >=8-line unchanged runs -> 2 lines + marker; changes never touched |
+| timestamped log (`normalizeTime`, off by default) | 12,014 | 8,514 | 29.1% | 67.6% | lossy: full timestamps -> `<ts>`; bare dates untouched |
+| path-heavy log (`shortenPaths`, off by default) | 10,075 | 6,929 | 31.2% | 66.8% | lossy: this machine's home prefix -> `~` (separator-style, whole-prefix only) |
 
 Quality rules that hold by construction:
 
 - **The two default-on rules are lossless.** JSON whitespace and table alignment padding carry no meaning; JSON must parse (JSONL, prose-wrapped or truncated text is skipped), and tables skip fenced code blocks and escaped-pipe rows so cell content can never be corrupted.
-- **The two opt-in rules are lossy and say so** - the marker they leave names what was dropped (`base64 blob of 6001 chars elided`, `24 more identical lines omitted`).
+- **Every opt-in rule is lossy and says so** - the marker they leave names what was dropped (`base64 blob of 6001 chars elided`, `24 more identical lines omitted`, `<ts>` standing in for a timestamp). Each also has a **shape gate** so ordinary text that merely looks similar (JSX with tags, prose mentioning dates, a short diff hunk, a 2-line stack) passes through untouched - smoke-tested.
 - **`read` output is excluded entirely**, so what you read is byte-for-byte what `edit`'s `oldString` must match.
 - Transforms run after the dedupe hash is computed over the original bytes - a whitespace-variant of the same JSON can never satisfy the "byte-identical" dedupe claim (smoke-tested).
-- Runs after RTK, before `api.compress`; the Rust hot path and its byte-identical JS fallback are unchanged.
+- Runs after RTK, before `api.compress`; the Rust hot path and its byte-identical JS fallback are unchanged (all five new transforms are TypeScript-only by design).
+
+**Device-RAM cache** (`tool.ramCache`, on by default; `tool.ramCacheChars` budget, default 2,000,000 chars): the full RTK + transform + compress result for a `(tool, command, exact original bytes)` key is memoized in a bounded in-process LRU, so a repeat skips the whole pipeline. The key **is** the input - a hit can never be stale or foreign. Inputs under 256 chars don't get a slot (recompute is cheaper), the oldest entries evict first at the budget, and `/tokens` shows the live hit/miss counters. Measured on a 100,116-char result: **0.41 ms full pipeline -> 0.13 ms on a hit (~3x)**, and the saving is pure plugin CPU - the model never sees a different byte. Cleared on `resetAll` only (plugin unload), not per session.
 
 **Cost of the savings** (the honest part):
 
@@ -184,23 +197,26 @@ Quality rules that hold by construction:
 | Compression throughput | 73-143 MB/s native / 22-58 MB/s JS fallback |
 | Native addon size | 246 KB on disk, loaded in-process |
 | Metering a ~58,000-token request | 0.04-0.13 ms |
+| RAM-cache hit vs full pipeline (100k-char result) | 0.13 ms vs 0.41 ms (~3x) |
 | Extra processes | none (in-process Node-API addon) |
 
 ## Features
 
 - Tool output is cleaned and capped in Rust: ANSI/control stripping, CRLF normalization, blank-run collapse, head+tail truncation with an explicit omission marker
-- **Structural transforms** (`tool.compactJson` + `tool.collapseTable` on by default, lossless; `tool.scrubBase64` + `tool.collapseRepeats` opt-in, lossy with honest markers): whole-JSON whitespace collapse and markdown table padding strip before compression; the `read` tool is never touched
+- **Structural transforms** (`tool.compactJson` + `tool.collapseTable` on by default, lossless; `tool.scrubBase64`, `tool.collapseRepeats`, `tool.collapseStacks`, `tool.collapseDiff`, `tool.stripHtml`, `tool.normalizeTime`, `tool.shortenPaths` opt-in, lossy with honest markers and shape gates): JSON whitespace, table padding, base64 blobs, repeated lines, stack frames, diff context, HTML pages, timestamps and home paths reduced before compression; the `read` tool is never touched
+- **Device-RAM cache** (`tool.ramCache`, on by default, `tool.ramCacheChars` budget): repeats of the same `(tool, command, bytes)` skip the whole pipeline via a bounded in-process LRU; hit/miss counters in `/tokens`
 - Byte-identical repeat results are replaced with a verified stub (per-session, window of 4, configurable)
 - **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
 - **Caveman terse responses** (`caveman.enabled`, off by default): a system-prompt instruction to answer first with no filler - code, paths and errors stay verbatim
 - `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
 - `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - works in the TUI **and** in Desktop (command palette), via the bundled GUI part
 - `/plugins` (Desktop) toggles whole plugins on/off: rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled (row description + toggle/apply toasts); built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
+- `/optimize` (Desktop) toggles this plugin's own features, all nine transforms and the config-level companion plugins from inside OpenCode - same backup/merge/JSONC guarantees as the installer, config hot-reload, no separate window
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)
 - Optional output-token budget (`budgetMaxTokens`) pinned to every agent-loop request
 - Pure-JS fallback with byte-identical hashing if the native addon can't load - degrades in speed, never in correctness
-- Bounded memory: per-session dedupe rings (max 50 sessions), LRU metrics eviction, debounced storage writes
+- Bounded memory: per-session dedupe rings (max 50 sessions), RAM cache bounded by `tool.ramCacheChars`, LRU metrics eviction, debounced storage writes
 - GUI installer with per-feature checkboxes plus optional third-party companion plugins (below)
 
 ## Companion plugins
@@ -230,6 +246,35 @@ Companions are merged into your existing `opencode.json` exactly like the main p
    - `opencode-supermemory` + `oh-my-opencode` - both hook auto-compact (documented in supermemory's README)
 
 Matching is exact: `oh-my-opencode-slim` is a different package (it removed the bundled auth proxies and compact hooks) and never triggers the `oh-my-opencode` rules. Quota, history-search and supermemory-vs-rotation were checked and have no real overlap - they are not flagged.
+
+## 20 further optimization ideas
+
+Ideas considered for squeezing more tokens out of OpenCode after the first release, with an honest status for each. **Rejected** means it was evaluated and does not hold up here - not that it is a bad idea in general.
+
+| # | Idea | Status | Why |
+| ---: | --- | --- | --- |
+| 1 | Device-RAM cache of the transform pipeline | **shipped** (`tool.ramCache`) | Key is `(tool, command, exact bytes)` - a hit is always the correct result; bounded LRU, live counters in `/tokens` |
+| 2 | Home-directory shortening to `~` | **shipped** (`tool.shortenPaths`) | Whole-prefix match on both separator styles, so lookalike paths are never rewritten |
+| 3 | Timestamp normalization to `<ts>` | **shipped** (`tool.normalizeTime`) | Line order still carries chronology; bare dates and version numbers untouched |
+| 4 | Stack-trace frame collapsing | **shipped** (`tool.collapseStacks`) | Frame-shape gate; only runs of >=3 byte-identical frames collapse, unique frames survive |
+| 5 | Unified-diff context collapsing | **shipped** (`tool.collapseDiff`) | Real-diff gate (`@@` + file header); added/removed lines never touched, 2+marker+2 keeps locality |
+| 6 | HTML page to text | **shipped** (`tool.stripHtml`) | Page gate (doctype/`<html>`/`<body>`) keeps JSX and component source intact |
+| 7 | Semantic dedupe via embeddings | **rejected** | Needs an embedding model (network + cost + latency) and would hide *near*-duplicates the model may need; hash dedupe already covers the real repeats |
+| 8 | Mid-session summarization of old messages | **out-of-scope** | Message history belongs to OpenCode's own compaction; a plugin only sees tool results |
+| 9 | Minified file reads | **rejected** | Breaks `edit` - `oldString` must match the real bytes; `read` is excluded from every transform for this reason |
+| 10 | Markdown link-URL collapsing (`[text](url)` -> `text`) | **planned** | Lossless only when reference-style definitions are kept; not implemented yet |
+| 11 | JSONL/NDJSON stream compaction | **planned** | Natural extension of `compactJson` (parse-gated per line); not implemented yet |
+| 12 | Cross-session content-addressed cache on disk | **rejected** | Disk cache risks stale content after file edits, adds IO to the hot path, and session rings already cover repeats that matter |
+| 13 | Prompt-cache layout control (cache-aware block ordering) | **out-of-scope** | Prompt caching is the host/provider's job; OpenCode owns request assembly |
+| 14 | Screenshot/image downscaling | **out-of-scope** | Binary image payloads are not text; this plugin transforms text only |
+| 15 | zstd-compress stored history | **rejected** | Storage is not the bottleneck - tokens are, and the model can never read compressed bytes |
+| 16 | Drop all diff context (keep only changed lines) | **rejected** | Without context the model cannot place a change; `collapseDiff` already takes the safe GitHub-style middle ground |
+| 17 | Base64/blob scrubbing | **shipped** (`tool.scrubBase64`, opt-in) | Honest length marker; gated at >=500 chars so ordinary tokens are untouched |
+| 18 | Auto session rotation at 85% of context | **shipped** (`rotation.auto`, on) | State file seeds the next session; re-arms only after pressure drops, so it cannot loop |
+| 19 | Cheaper-model routing for titles/compaction/one-shots | **shipped** (existing) | Same provider, lower-cost model for side tasks the main model does not need to do |
+| 20 | RTK-style reduction for more command shapes | **planned** | New recognisers are added as real output samples show up; unknown formats always pass through unchanged |
+
+The pattern behind every **shipped** row: reduce only what cannot matter (whitespace, repetition, shape-identical noise), gate every lossy rule on unambiguous input shape, leave an honest marker when something is dropped, and keep the model able to recover the detail with one re-read.
 
 ## Tech Stack
 

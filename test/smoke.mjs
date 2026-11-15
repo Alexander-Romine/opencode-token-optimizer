@@ -419,5 +419,173 @@ const h3 = { content: [{ type: "text", text: '{\n  "a": 1\n}' }] }
 const hOut3 = hOpt.optimize("h-sess", "bash", h3)
 check("transform: byte-identical JSON still deduped", hOut3 !== null && hOut3.deduped === true)
 
+// ---- opt-in transforms (shortenPaths / normalizeTime / stacks / diff / html) ----
+
+const home = os.homedir()
+const homeFile = `${home}\\Documents\\file.txt`
+const pathsOn = { ...toolDefaults, shortenPaths: true }
+const shortOut = transformText(`reading ${homeFile} now`, "bash", pathsOn)
+check(
+  "transform: home path shortened when opted in",
+  shortOut === "reading ~\\Documents\\file.txt now",
+  JSON.stringify(shortOut),
+)
+check(
+  "transform: home path untouched by default",
+  transformText(`reading ${homeFile}`, "bash", toolDefaults).includes(home),
+)
+
+const timeOn = { ...toolDefaults, normalizeTime: true }
+const timed = "start 2026-11-13T09:13:12.483Z end\nat 2026-11-13 09:13:12.500 done\ndate 2026-11-13 alone"
+const timeOut = transformText(timed, "bash", timeOn)
+check(
+  "transform: full timestamps normalized to <ts>",
+  timeOut.includes("start <ts> end") && timeOut.includes("at <ts> done"),
+  JSON.stringify(timeOut),
+)
+check("transform: bare dates untouched", timeOut.includes("date 2026-11-13 alone"))
+check("transform: timestamps untouched by default", transformText(timed, "bash", toolDefaults).includes("2026-11-13T09:13:12.483Z"))
+
+const stacksOn = { ...toolDefaults, collapseStacks: true }
+const frame = "    at run (app.js:10:5)"
+const trace = [frame, frame, frame, "    at main (app.js:1:1)"].join("\n")
+const stackOut = transformText(trace, "bash", stacksOn)
+check(
+  "transform: repeated stack frames collapsed with count",
+  stackOut.split(frame).length - 1 === 1 && stackOut.includes("2 more identical stack frames omitted"),
+  JSON.stringify(stackOut),
+)
+check("transform: stack collapse off by default", transformText(trace, "bash", toolDefaults) === trace)
+
+const diffOn = { ...toolDefaults, collapseDiff: true }
+const diffCtx = Array.from({ length: 12 }, (_, i) => ` ctx line ${i}`)
+const diffText = [
+  "diff --git a/f.txt b/f.txt",
+  "--- a/f.txt",
+  "+++ b/f.txt",
+  "@@ -1,15 +1,15 @@",
+  ...diffCtx,
+  "-old",
+  "+new",
+  ...diffCtx.slice(0, 4),
+].join("\n")
+const diffOut = transformText(diffText, "bash", diffOn)
+check(
+  "transform: long diff context runs collapsed, changes kept",
+  diffOut.includes("8 unchanged lines omitted") && diffOut.includes("-old") && diffOut.includes("+new"),
+  JSON.stringify(diffOut),
+)
+check(
+  "transform: non-diff text untouched by collapseDiff",
+  transformText("@@ not really a diff", "bash", diffOn) === "@@ not really a diff",
+)
+check("transform: diff untouched by default", transformText(diffText, "bash", toolDefaults) === diffText)
+
+const htmlOn = { ...toolDefaults, stripHtml: true }
+const page = "<!doctype html><html><body><h1>Title</h1><p>Hello world</p><script>var x=1;</script></body></html>"
+const htmlOut = transformText(page, "bash", htmlOn)
+check(
+  "transform: html page stripped to text, script dropped",
+  htmlOut.includes("Title") && htmlOut.includes("Hello world") && !htmlOut.includes("<p>") && !htmlOut.includes("var x"),
+  JSON.stringify(htmlOut),
+)
+const jsx = 'const el = <div className="x">hi</div>'
+check("transform: non-page markup untouched", transformText(jsx, "bash", htmlOn) === jsx)
+check("transform: html untouched by default", transformText(page, "bash", toolDefaults).includes("<html"))
+
+// ---- device-RAM cache ----
+
+const cacheBig = `{"payload": "${"x".repeat(300)}"}`
+const cOpt = new ToolOptimizer(parseOptions({ tool: { ramCache: true, dedupeWindow: 0 } }))
+const c1 = { content: [{ type: "text", text: cacheBig }] }
+cOpt.optimize("cache-sess", "bash", c1)
+const s1 = cOpt.cacheStats()
+const c2 = { content: [{ type: "text", text: cacheBig }] }
+const o2 = cOpt.optimize("cache-sess", "bash", c2)
+const s2 = cOpt.cacheStats()
+check(
+  "cache: first call misses, repeat hits",
+  s1.misses === 1 && s1.hits === 0 && s2.hits === 1 && o2 !== null,
+  JSON.stringify(s2),
+)
+check("cache: hit output identical to miss", c1.content[0].text === c2.content[0].text)
+
+const noCache = new ToolOptimizer(parseOptions({ tool: { ramCache: false, dedupeWindow: 0 } }))
+noCache.optimize("cache-off", "bash", { content: [{ type: "text", text: cacheBig }] })
+noCache.optimize("cache-off", "bash", { content: [{ type: "text", text: cacheBig }] })
+const offStats = noCache.cacheStats()
+check("cache: disabled stays at zero hits and zero entries", offStats.enabled === false && offStats.hits === 0 && offStats.entries === 0)
+
+cOpt.optimize("cache-sess", "bash", { content: [{ type: "text", text: "tiny" }] })
+check("cache: results under 256 chars not cached", cOpt.cacheStats().entries === s2.entries)
+
+const tinyCache = new ToolOptimizer(parseOptions({ tool: { ramCache: true, ramCacheChars: 100, dedupeWindow: 0 } }))
+tinyCache.optimize("cache-tiny", "bash", { content: [{ type: "text", text: cacheBig }] })
+check("cache: budget smaller than entry stores nothing", tinyCache.cacheStats().entries === 0)
+
+// ---- /optimize: options + companions through the real config machinery ----
+
+import { createOptmgr } from "../src/optmgr.ts"
+
+const omDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenopt-om-"))
+const omCfg = path.join(omDir, "opencode.json")
+fs.writeFileSync(
+  omCfg,
+  JSON.stringify(
+    {
+      plugins: [
+        { package: "./plugins/token-optimizer", options: { tool: { compactJson: true, ramCache: false } } },
+        "opencode-history-search",
+        "opencode-supermemory",
+        "opencode-gemini-auth@2.0.1",
+      ],
+      mcp: { servers: { exa: { type: "remote", url: "https://mcp.exa.ai/mcp" } } },
+      custom: { keep: true },
+    },
+    null,
+    2,
+  ) + "\n",
+  "utf8",
+)
+const om = createOptmgr({ directory: omDir, globalDir: path.join(omDir, "no-global") })
+
+const omGet = om.get()
+const omRow = (key) => omGet.rows.find((r) => r.key === key)
+check("optmgr: rows cover all three sections", omGet.rows.some((r) => r.section === "feature") && omGet.rows.some((r) => r.section === "transform") && omGet.rows.some((r) => r.section === "companion"))
+check("optmgr: reads existing option values", omRow("rtk")?.enabled === true && omRow("ramCache")?.enabled === false && omRow("compactJson")?.enabled === true, JSON.stringify(omGet.rows.slice(0, 3)))
+check("optmgr: companion install state detected", omRow("history")?.enabled === true && omRow("exa")?.enabled === true && omRow("quota")?.enabled === false)
+
+const omSet = om.set([
+  { key: "rtk", enabled: false },
+  { key: "ramCache", enabled: true },
+  { key: "scrubBase64", enabled: true },
+  { key: "quota", enabled: true },
+  { key: "history", enabled: false },
+  { key: "exa", enabled: false },
+])
+check("optmgr: set reports no errors", omSet.errors.length === 0, omSet.errors.join(" | "))
+check("optmgr: one timestamped backup written", omSet.backups.length === 1, omSet.backups.join(","))
+
+const omWritten = JSON.parse(fs.readFileSync(omCfg, "utf8"))
+const omEntry = omWritten.plugins.find((e) => e && typeof e === "object" && String(e.package).includes("token-optimizer"))
+check(
+  "optmgr: feature + transform options written",
+  omEntry.options.tool.rtk === undefined && omEntry.options.rtk?.enabled === false && omEntry.options.tool.ramCache === true && omEntry.options.tool.scrubBase64 === true && omEntry.options.tool.compactJson === true,
+  JSON.stringify(omEntry.options),
+)
+check(
+  "optmgr: companion add + remove applied",
+  omWritten.plugins.includes("@slkiser/opencode-quota") && !omWritten.plugins.includes("opencode-history-search"),
+  JSON.stringify(omWritten.plugins),
+)
+check("optmgr: exa removed only because URL matched", !omWritten.mcp?.servers?.exa)
+check("optmgr: custom keys and retired packages handled", omWritten.custom?.keep === true && !omWritten.plugins.some((e) => String(e).includes("supermemory") || String(e).includes("gemini-auth")))
+check(
+  "optmgr: unknown option keys preserved",
+  omEntry.options.enabled === undefined && omEntry.options.charsPerToken === undefined && typeof omEntry.options.tool === "object",
+)
+
+fs.rmSync(omDir, { recursive: true, force: true })
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

@@ -14,8 +14,9 @@
  * Run:  node benchmark/bench.mjs
  */
 import { api, fallbackApi, nativeAvailable, nativeDetail } from "../src/native.ts"
-import { transformText } from "../src/tools.ts"
+import { transformText, ToolOptimizer } from "../src/tools.ts"
 import { parseOptions } from "../src/options.ts"
+import os from "node:os"
 
 // Mirror of meter.ts estimateChars (inlined: Node strip-only mode cannot
 // parse meter.ts's parameter properties). Walking live objects, O(values).
@@ -326,6 +327,88 @@ transformRow("file read via read tool (skipped)", sourceFile(9_000), "read", too
 transformRow("source file via bash (nothing fires)", sourceFile(9_000), "bash", toolDefaults, "not JSON/table - untouched")
 transformRow("base64 blob (scrubBase64, lossy)", base64Blob(6_000), "bash", { ...toolDefaults, scrubBase64: true }, "opt-in; marker says what was dropped")
 transformRow("repeated log lines (collapseRepeats, lossy)", repeatedLog(12_000), "bash", { ...toolDefaults, collapseRepeats: true }, "opt-in; runs of >=3 identical long lines")
+
+/* Opt-in transforms: realistic samples built on the spot. */
+function htmlPage(target) {
+  const parts = ["<!doctype html><html><head><title>Bench</title><style>body{color:red}</style></head><body>"]
+  let i = 0
+  while (parts.join("").length < target) {
+    parts.push(`<div class="row${i}"><h2>Section ${i}</h2><p>${pick(WORDS)} ${pick(WORDS)} ${pick(WORDS)} content</p></div>`)
+    i++
+  }
+  parts.push(`<script>console.log("noise ${i}")</script></body></html>`)
+  return parts.join("\n")
+}
+function diffWithLongContext(target) {
+  const out = ["diff --git a/src/main.rs b/src/main.rs", "--- a/src/main.rs", "+++ b/src/main.rs", "@@ -1,40 +1,40 @@"]
+  let i = 0
+  while (out.join("\n").length < target) {
+    if (i % 10 === 7) out.push("-    let old = compute(input);")
+    else if (i % 10 === 8) out.push("+    let new = compute_fast(input);")
+    else out.push(`     let ${pick(WORDS)}${i} = ${i} + ${pick(WORDS)}.len();`)
+    i++
+  }
+  return out.join("\n")
+}
+function timestampLog(target) {
+  const out = []
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(`2026-11-13T09:${String(i % 60).padStart(2, "0")}:${String((i * 7) % 60).padStart(2, "0")}.${String(i % 1000).padStart(3, "0")}Z INFO ${pick(WORDS)} worker-${i % 4} handled ${pick(WORDS)} request`)
+    i++
+  }
+  return out.join("\n")
+}
+function stackTrace(target) {
+  const out = ["Error: benchmark failure", "    at handler (src/app.js:42:11)"]
+  while (out.join("\n").length < target) {
+    for (let k = 0; k < 6; k++) out.push("    at recurse (src/depth.js:10:5)")
+    out.push("    at handler (src/app.js:43:9)")
+  }
+  out.push("    at main (src/index.js:5:1)")
+  return out.join("\n")
+}
+function pathHeavyLog(target) {
+  const home = (() => {
+    try {
+      return os.homedir()
+    } catch {
+      return "/home/user"
+    }
+  })()
+  const out = []
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(`[${i}] compiling ${home}/src/module-${i}.ts -> ${home}/dist/module-${i}.js`)
+    i++
+  }
+  return out.join("\n")
+}
+
+transformRow("html page (stripHtml, lossy)", htmlPage(12_000), "bash", { ...toolDefaults, stripHtml: true }, "opt-in; page gate, JSX untouched")
+transformRow("unified diff (collapseDiff, lossy)", diffWithLongContext(14_000), "bash", { ...toolDefaults, collapseDiff: true }, "opt-in; changes kept, context marked")
+transformRow("timestamped log (normalizeTime, lossy)", timestampLog(12_000), "bash", { ...toolDefaults, normalizeTime: true }, "opt-in; full timestamps -> <ts>")
+transformRow("stack trace (collapseStacks, lossy)", stackTrace(10_000), "bash", { ...toolDefaults, collapseStacks: true }, "opt-in; identical frames -> one + count")
+transformRow("path-heavy log (shortenPaths, lossy)", pathHeavyLog(10_000), "bash", { ...toolDefaults, shortenPaths: true }, "opt-in; home prefix -> ~")
+
+/* ------------------------------------------------------------------ *
+ * Device-RAM cache: repeat optimize() with and without memoization
+ * ------------------------------------------------------------------ */
+
+const cacheSample = sourceFile(100_000)
+const mkResult = () => ({ content: [{ type: "text", text: cacheSample }] })
+const cached = new ToolOptimizer(parseOptions({ tool: { ramCache: true, dedupeWindow: 0 } }))
+cached.optimize("bench", "bash", mkResult()) // populate
+const hitMs = time(() => cached.optimize("bench", "bash", mkResult()), 50)
+const uncached = new ToolOptimizer(parseOptions({ tool: { ramCache: false, dedupeWindow: 0 } }))
+const missMs = time(() => uncached.optimize("bench", "bash", mkResult()), 50)
+const stats = cached.cacheStats()
+console.log(
+  `\nram cache: repeat optimize() of a ${cacheSample.length}-char result: ` +
+    `${missMs.toFixed(2)} ms (full pipeline) -> ${hitMs.toFixed(2)} ms (hit) ` +
+    `(${(missMs / Math.max(hitMs, 0.001)).toFixed(0)}x); ` +
+    `stats ${stats.hits} hit / ${stats.misses} miss, ${stats.entries} entries, ${stats.chars.toLocaleString()} chars`,
+)
 
 /* ------------------------------------------------------------------ *
  * Dedupe: identical repeated read

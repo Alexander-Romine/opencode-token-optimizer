@@ -98,6 +98,12 @@ export interface PluginChange {
   enabled: boolean
 }
 
+/** One pending toggle in an `/optimize` batch (features, transforms, companions). */
+export interface OptionChange {
+  key: string
+  enabled: boolean
+}
+
 /** Result of `pluginsList`. */
 export interface PluginsListResult {
   rows: PluginRow[]
@@ -112,6 +118,34 @@ export interface PluginsSetResult extends PluginsListResult {
   /** Timestamped backups written for this batch (one per file changed). */
   backups: string[]
   /** Per-row failures; changes not mentioned here were applied. */
+  errors: string[]
+}
+
+/** One row of the `/optimize` panel: a feature, transform or companion. */
+export interface OptionRow {
+  /** Stable key: feature id, `tool.*` option name, or companion id. */
+  key: string
+  label: string
+  desc: string
+  /** Which panel section the row belongs to. */
+  section: "feature" | "transform" | "companion"
+  enabled: boolean
+}
+
+/** Result of `optionsGet`. */
+export interface OptionsGetResult {
+  rows: OptionRow[]
+  /** Config file the token-optimizer entry lives in (empty when absent). */
+  file: string
+  /** Config files that could not be listed normally (JSONC, invalid JSON). */
+  warnings: string[]
+}
+
+/** Result of `optionsSet`. */
+export interface OptionsSetResult extends OptionsGetResult {
+  /** Timestamped backups written for this batch. */
+  backups: string[]
+  /** Per-change failures; changes not mentioned here were applied. */
   errors: string[]
 }
 
@@ -176,6 +210,60 @@ const pluginsSetOutput: Rpc.PortableValueSchema = {
   additionalProperties: false,
 }
 
+const optionRowSchema: Rpc.PortableValueSchema = {
+  type: "object",
+  properties: {
+    key: { type: "string" },
+    label: { type: "string" },
+    desc: { type: "string" },
+    section: { type: "string" },
+    enabled: { type: "boolean" },
+  },
+  required: ["key", "label", "desc", "section", "enabled"],
+  additionalProperties: false,
+}
+
+const optionsGetOutput: Rpc.PortableValueSchema = {
+  type: "object",
+  properties: {
+    rows: { type: "array", items: optionRowSchema },
+    file: { type: "string" },
+    warnings: stringListSchema,
+  },
+  required: ["rows", "file", "warnings"],
+  additionalProperties: false,
+}
+
+const optionsSetInput: Rpc.PortableValueSchema = {
+  type: "object",
+  properties: {
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { key: { type: "string" }, enabled: { type: "boolean" } },
+        required: ["key", "enabled"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["changes"],
+  additionalProperties: false,
+}
+
+const optionsSetOutput: Rpc.PortableValueSchema = {
+  type: "object",
+  properties: {
+    rows: { type: "array", items: optionRowSchema },
+    file: { type: "string" },
+    warnings: stringListSchema,
+    backups: stringListSchema,
+    errors: stringListSchema,
+  },
+  required: ["rows", "file", "warnings", "backups", "errors"],
+  additionalProperties: false,
+}
+
 const rotatedSchema: Rpc.PortableEventDefinition["schema"] = {
   type: "object",
   properties: {
@@ -213,6 +301,10 @@ export const TokenOptimizer = Rpc.define({
     pluginsList: { input: statusInput, output: pluginsListOutput },
     /** Apply a batch of plugin toggles; one backup per config file changed. */
     pluginsSet: { input: pluginsSetInput, output: pluginsSetOutput },
+    /** Feature/transform/companion toggles for the Desktop `/optimize` panel. */
+    optionsGet: { input: statusInput, output: optionsGetOutput },
+    /** Apply a batch of option/companion toggles; one backup per file changed. */
+    optionsSet: { input: optionsSetInput, output: optionsSetOutput },
   },
   events: {
     /** Fired after a rotation so the TUI can focus the new session. */

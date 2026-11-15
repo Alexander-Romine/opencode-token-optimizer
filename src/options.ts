@@ -38,8 +38,26 @@ export interface ToolOptions {
   collapseTable: boolean
   /** Lossy: elide base64 runs of >=500 chars with an honest marker. */
   scrubBase64: boolean
-  /** Lossy: collapse runs of >=3 identical lines of >=80 chars to one + count. */
+  /** Lossy: collapse runs of >=3 identical stack frames to one + count. */
   collapseRepeats: boolean
+  /** Lossy: collapse repeated stack-trace frames (`at ...`, Python `File ...`). */
+  collapseStacks: boolean
+  /** Lossy: elide long unchanged runs inside unified diffs (markers kept). */
+  collapseDiff: boolean
+  /** Lossy: convert raw HTML pages (`<html>`/`<body>`/doctype) to text. */
+  stripHtml: boolean
+  /** Lossy: full timestamps (ISO-8601 / `YYYY-MM-DD HH:MM:SS`) become `<ts>`. */
+  normalizeTime: boolean
+  /** Lossy: the home-directory prefix becomes `~` in path references. */
+  shortenPaths: boolean
+  /**
+   * Device-RAM LRU: memoize the RTK+transform+compress result keyed by the
+   * exact original input, so repeats skip the whole pipeline. Deterministic
+   * and content-addressed - never serves one result for a different input.
+   */
+  ramCache: boolean
+  /** Char budget (keys + values) for the RAM cache; oldest entries evicted first. */
+  ramCacheChars: number
   /** Tool names the compressor leaves untouched. */
   exclude: string[]
 }
@@ -116,6 +134,13 @@ const DEFAULT: Options = {
     collapseTable: true,
     scrubBase64: false,
     collapseRepeats: false,
+    collapseStacks: false,
+    collapseDiff: false,
+    stripHtml: false,
+    normalizeTime: false,
+    shortenPaths: false,
+    ramCache: true,
+    ramCacheChars: 2_000_000,
     exclude: ["write", "edit", "apply_patch"],
   },
   routing: { agents: {} },
@@ -203,6 +228,13 @@ export function parseOptions(raw: unknown): Options {
     collapseTable: bool(read(toolRaw, "collapseTable", "collapse_table"), DEFAULT.tool.collapseTable),
     scrubBase64: bool(read(toolRaw, "scrubBase64", "scrub_base64"), DEFAULT.tool.scrubBase64),
     collapseRepeats: bool(read(toolRaw, "collapseRepeats", "collapse_repeats"), DEFAULT.tool.collapseRepeats),
+    collapseStacks: bool(read(toolRaw, "collapseStacks", "collapse_stacks"), DEFAULT.tool.collapseStacks),
+    collapseDiff: bool(read(toolRaw, "collapseDiff", "collapse_diff"), DEFAULT.tool.collapseDiff),
+    stripHtml: bool(read(toolRaw, "stripHtml", "strip_html"), DEFAULT.tool.stripHtml),
+    normalizeTime: bool(read(toolRaw, "normalizeTime", "normalize_time"), DEFAULT.tool.normalizeTime),
+    shortenPaths: bool(read(toolRaw, "shortenPaths", "shorten_paths"), DEFAULT.tool.shortenPaths),
+    ramCache: bool(read(toolRaw, "ramCache", "ram_cache"), DEFAULT.tool.ramCache),
+    ramCacheChars: Math.max(0, num(read(toolRaw, "ramCacheChars", "ram_cache_chars"), DEFAULT.tool.ramCacheChars)),
     exclude: stringList(read(toolRaw, "exclude"), DEFAULT.tool.exclude),
   }
 

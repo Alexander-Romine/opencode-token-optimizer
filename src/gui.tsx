@@ -20,6 +20,10 @@ import { Command, Plugin } from "@opencode/plugin/gui"
 
 import {
   TokenOptimizer,
+  type OptionChange,
+  type OptionRow,
+  type OptionsGetResult,
+  type OptionsSetResult,
   type PluginChange,
   type PluginRow,
   type PluginsListResult,
@@ -228,6 +232,156 @@ export default Plugin.define({
                     )}
                   </For>
                 </ctx.ui.SettingsSection>
+              </Show>
+            </Show>
+          </ctx.ui.Dialog>
+        ))
+
+        try {
+          await refresh()
+        } catch (error) {
+          setLoadError(error instanceof Error ? error.message : String(error))
+        } finally {
+          setLoading(false)
+        }
+      },
+    }))
+
+    /* ---------------------------------------------------------------- *
+     * /optimize - feature / transform / companion toggles
+     *
+     * The in-OpenCode half of the installer's checkbox page: same backup-
+     * guaranteed config writes, no separate window. External installs
+     * (agents clone, cc-switch MSI) stay with Install.cmd.
+     * ---------------------------------------------------------------- */
+
+    ctx.add(Command, () => ({
+      id: "optimize",
+      title: "Token optimizer settings",
+      description: "Toggle optimizations, transforms and companion plugins (edits opencode.json with backups)",
+      keywords: "optimize settings options transforms cache rtk caveman companions toggle config install",
+      group: "Token optimizer",
+      slash: { name: "optimize" },
+      section: "prompt" as const,
+      run: async () => {
+        const [rows, setRows] = createSignal<OptionRow[]>([])
+        const [original, setOriginal] = createSignal<Record<string, boolean>>({})
+        const [warnings, setWarnings] = createSignal<string[]>([])
+        const [file, setFile] = createSignal("")
+        const [busy, setBusy] = createSignal(false)
+        const [loading, setLoading] = createSignal(true)
+        const [loadError, setLoadError] = createSignal("")
+
+        const accept = (result: OptionsGetResult) => {
+          setRows(result.rows)
+          setOriginal(Object.fromEntries(result.rows.map((row) => [row.key, row.enabled])))
+          setWarnings(result.warnings)
+          setFile(result.file)
+        }
+
+        const pending = () => rows().filter((row) => row.enabled !== (original()[row.key] ?? row.enabled))
+        const section = (name: OptionRow["section"]) => rows().filter((row) => row.section === name)
+
+        const toggle = (key: string, enabled: boolean) => {
+          setRows((current) => current.map((row) => (row.key === key ? { ...row, enabled } : row)))
+        }
+
+        const refresh = async () => {
+          accept((await optimizer.optionsGet({})) as OptionsGetResult)
+        }
+
+        const apply = async () => {
+          const changes: OptionChange[] = pending().map((row) => ({ key: row.key, enabled: row.enabled }))
+          if (!changes.length || busy()) return
+          setBusy(true)
+          try {
+            const result = (await optimizer.optionsSet({ changes })) as OptionsSetResult
+            accept(result)
+            if (result.errors.length) {
+              ctx.toast.show({
+                title: "Optimizations",
+                description: result.errors.slice(0, 3).join(" · "),
+                variant: "error",
+              })
+            } else {
+              const backups = result.backups.map((path) => shortPath(path))
+              ctx.toast.show({
+                title: "Optimizations",
+                description:
+                  `${changes.length} change(s) applied` +
+                  (backups.length ? ` · backup: ${backups.join(", ")}` : "") +
+                  (result.warnings.length ? ` · ${result.warnings.length} warning(s)` : ""),
+                variant: "success",
+              })
+            }
+            // Config hot-reload picks the new options up a second or two later.
+            setTimeout(() => void refresh().catch(() => undefined), 2500)
+          } catch (error) {
+            ctx.toast.show({
+              title: "Optimizations",
+              description: error instanceof Error ? error.message : String(error),
+              variant: "error",
+            })
+          } finally {
+            setBusy(false)
+          }
+        }
+
+        const renderSection = (name: OptionRow["section"], title: string, footer?: string) => (
+          <ctx.ui.SettingsSection title={title} footer={footer}>
+            <For each={section(name)}>
+              {(row) => (
+                <ctx.ui.SettingsRow title={row.label} description={row.desc}>
+                  <ctx.ui.Switch
+                    label={`Enable ${row.label}`}
+                    hideLabel
+                    checked={row.enabled}
+                    onChange={(enabled) => toggle(row.key, enabled)}
+                  />
+                </ctx.ui.SettingsRow>
+              )}
+            </For>
+          </ctx.ui.SettingsSection>
+        )
+
+        ctx.dialogs.open((dialog) => (
+          <ctx.ui.Dialog
+            title="Token optimizer"
+            description={
+              "Toggle optimizations and companions. Each apply writes opencode.json with a timestamped backup." +
+              (file() ? ` Editing: ${shortPath(file())}` : "")
+            }
+            size="large"
+            footer={
+              <>
+                <ctx.ui.Button variant="ghost" onClick={() => dialog.close()}>
+                  Close
+                </ctx.ui.Button>
+                <ctx.ui.Button variant="contrast" busy={busy()} disabled={busy() || pending().length === 0} onClick={() => void apply()}>
+                  {pending().length > 0 ? `Apply (${pending().length})` : "Apply"}
+                </ctx.ui.Button>
+              </>
+            }
+          >
+            <Show
+              when={!loading()}
+              fallback={
+                <div style="display: flex; justify-content: center; padding: 2rem 0;">
+                  <ctx.ui.Loader />
+                </div>
+              }
+            >
+              <Show
+                when={!loadError()}
+                fallback={<div style="padding: 0.5rem 0; color: var(--op-content-dim);">{loadError()}</div>}
+              >
+                {renderSection("feature", "Optimizations", warnings().length > 0 ? warnings().join("\n") : undefined)}
+                {renderSection("transform", "Structural transforms", "Lossy transforms leave an honest marker in the output.")}
+                {renderSection(
+                  "companion",
+                  "Companion plugins",
+                  "agents and cc-switch are external installs - run Install.cmd for those.",
+                )}
               </Show>
             </Show>
           </ctx.ui.Dialog>

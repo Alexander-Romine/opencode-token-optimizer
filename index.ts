@@ -28,8 +28,9 @@ import { Meter, charsToTokens, estimateChars, type SessionMetrics } from "./src/
 import { parseOptions } from "./src/options"
 import { buildReport } from "./src/report"
 import { StateManager, type SessionSnapshot } from "./src/state"
-import { TokenOptimizer, type PluginChange } from "./src/rpc"
+import { TokenOptimizer, type PluginChange, type OptionChange } from "./src/rpc"
 import { createPluginmgr, type PluginInfoLike } from "./src/pluginmgr"
+import { createOptmgr } from "./src/optmgr"
 import { ToolOptimizer } from "./src/tools"
 import { nativeAvailable, nativeDetail } from "./src/native"
 
@@ -165,7 +166,7 @@ export default Plugin.define({
       } catch (error) {
         console.error("[token-optimizer] report failed:", error)
       }
-      return buildReport(options, nativeDetail, rows)
+      return buildReport(options, nativeDetail, rows, optimizer.cacheStats())
     }
 
     /* ---------------------------------------------------------------- *
@@ -181,6 +182,9 @@ export default Plugin.define({
       storage: ctx.storage,
     })
 
+    /** Feature/transform/companion toggles for the Desktop `/optimize` panel. */
+    const optmgr = createOptmgr({ directory: ctx.location.directory })
+
     const registration = await ctx.rpc.register(TokenOptimizer, {
       report: async () => ({ text: await reportText() }),
       status: async () => ({ native: nativeAvailable, detail: nativeDetail }),
@@ -189,6 +193,11 @@ export default Plugin.define({
       /** Apply a batch of plugin toggles (one backup per file changed). */
       pluginsSet: async (input) =>
         pluginmgr.set(((input as { changes?: PluginChange[] }).changes ?? []) as PluginChange[]),
+      /** Current feature/transform/companion switches. */
+      optionsGet: async () => optmgr.get(),
+      /** Apply a batch of option/companion toggles (one backup per file changed). */
+      optionsSet: async (input) =>
+        optmgr.set(((input as { changes?: OptionChange[] }).changes ?? []) as OptionChange[]),
       state: async (input) => {
         const { sessionID } = input as { sessionID: string }
         const captured = await stateManager.capture(sessionID, meter.get(sessionID))

@@ -623,6 +623,10 @@ function writeFile(file: string, parsed: Record<string, unknown>): void {
   fs.writeFileSync(file, `${JSON.stringify(parsed, null, 2)}\n`, "utf8")
 }
 
+// Reused by optmgr (`/optimize`): same discovery, backup and write rules.
+export { loadDocs, backupFile, writeFile, pickWriteDoc }
+export type { Doc }
+
 /* ------------------------------------------------------------------ *
  * Public API
  * ------------------------------------------------------------------ */
