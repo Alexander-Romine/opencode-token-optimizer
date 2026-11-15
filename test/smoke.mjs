@@ -596,7 +596,7 @@ const panelDeps = {
   setOptions: (changes) => ({ rows: [], file: "", warnings: [], backups: [], errors: [], changes }),
   getPlugins: () => ({ rows: [], warnings: [], files: [] }),
   setPlugins: (changes) => ({ rows: [], warnings: [], files: [], backups: [], errors: [], changes }),
-  getReport: () => "session tokens: 42",
+  getUsage: () => "today     : 42 tokens\nlast 7 days: 42 tokens",
 }
 const panel = await startPanel({ ...panelDeps, port: 0 })
 check("panel: serves the toggle page", (await (await fetch(panel.url)).text()).includes("token-optimizer"))
@@ -604,8 +604,8 @@ check(
   "panel: health marker answers",
   (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",
 )
-const pReport = await (await fetch(`${panel.url}api/report`)).json()
-check("panel: report endpoint returns stats text", pReport.text === "session tokens: 42")
+const pUsage = await (await fetch(`${panel.url}api/usage`)).json()
+check("panel: usage endpoint returns the two lines", pUsage.text.includes("today") && pUsage.text.includes("last 7 days"))
 const pOpts = await (await fetch(`${panel.url}api/options`)).json()
 check("panel: options GET returns rows", pOpts.rows?.length === 1 && pOpts.rows[0].key === "rtk")
 const pPost = await (
@@ -621,6 +621,29 @@ check("panel: plugins GET returns rows", Array.isArray(pPlug.rows))
 await panel.close()
 const afterClose = await fetch(panel.url).catch(() => null)
 check("panel: close stops the server", afterClose === null)
+
+// ---- rolling usage ledger (today / last 7 days) ----
+
+import { updateUsage, formatUsageWindows } from "../src/usage.ts"
+
+const usageMem = new Map()
+const usageStorage = {
+  get: async (key) => usageMem.get(key),
+  set: async (key, value) => void usageMem.set(key, value),
+  scan: async () => ({ entries: [] }),
+}
+const snap = (input, output, read, write) => [{ id: "s1", tokens: { input, output, cache: { read, write } } }]
+let win = await updateUsage(usageStorage, snap(100, 50, 10, 5))
+check("usage: first sighting counts nothing", win.today.tokens === 0 && win.week.tokens === 0)
+win = await updateUsage(usageStorage, snap(130, 60, 20, 5))
+check("usage: growth lands in today + week", win.today.tokens === 50 && win.week.tokens === 50)
+win = await updateUsage(usageStorage, snap(130, 60, 20, 5))
+check("usage: no growth counts nothing", win.today.tokens === 50)
+const usageText = formatUsageWindows(win)
+check(
+  "usage: formatted as two labeled lines",
+  usageText.includes("today") && usageText.includes("last 7 days") && usageText.split("\n").length === 2,
+)
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

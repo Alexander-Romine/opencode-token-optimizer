@@ -29,8 +29,8 @@ export interface PanelDeps {
   getPlugins: () => unknown
   /** Applies whole-plugin changes. */
   setPlugins: (changes: Array<{ key: string; enabled: boolean }>) => unknown
-  /** The same text report `/tokens` shows in the TUI (stats section of the page). */
-  getReport: () => string | Promise<string>
+  /** Two-line rolling usage text ("today" / "last 7 days") for the page. */
+  getUsage: () => string | Promise<string>
   /** Preferred port; 0 lets the OS pick (still 127.0.0.1 only). */
   port?: number
 }
@@ -153,8 +153,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
     return
   }
 
-  if (method === "GET" && path === "/api/report") {
-    json(res, 200, { text: await deps.getReport() })
+  if (method === "GET" && path === "/api/usage") {
+    json(res, 200, { text: await deps.getUsage() })
     return
   }
 
@@ -261,7 +261,7 @@ const PAGE = `<!doctype html>
   <h1>token-optimizer</h1>
   <p class="sub" id="file">loading…</p>
   <section>
-    <h2>Statistics</h2>
+    <h2>Usage</h2>
     <pre id="stats">loading…</pre>
   </section>
   <div id="sections"></div>
@@ -355,8 +355,8 @@ function render() {
 }
 async function loadStats() {
   try {
-    const { text } = await getJson("/api/report");
-    document.getElementById("stats").textContent = text || "(no data yet)";
+    const { text } = await getJson("/api/usage");
+    document.getElementById("stats").textContent = text || "(no usage recorded yet)";
   } catch (error) {
     document.getElementById("stats").textContent = String(error.message || error);
   }

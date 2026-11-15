@@ -32,6 +32,7 @@ import { TokenOptimizer, type PluginChange, type OptionChange } from "./src/rpc"
 import { createPluginmgr, type PluginInfoLike } from "./src/pluginmgr"
 import { createOptmgr } from "./src/optmgr"
 import { startPanel, type Panel } from "./src/panel"
+import { formatUsageWindows, updateUsage } from "./src/usage"
 import { ToolOptimizer } from "./src/tools"
 import { nativeAvailable, nativeDetail } from "./src/native"
 
@@ -197,7 +198,16 @@ export default Plugin.define({
         setOptions: (changes) => optmgr.set(changes),
         getPlugins: () => pluginmgr.list(),
         setPlugins: (changes) => pluginmgr.set(changes),
-        getReport: reportText,
+        getUsage: async () => {
+          try {
+            const page = await ctx.session.list({ directory: ctx.location.directory, limit: 100 })
+            const sessions = (Array.isArray(page.data) ? page.data : []) as SessionSnapshot[]
+            return formatUsageWindows(await updateUsage(ctx.storage, sessions))
+          } catch (error) {
+            console.error("[token-optimizer] usage ledger failed:", error)
+            return "usage unavailable: " + (error instanceof Error ? error.message : String(error))
+          }
+        },
       })
       console.log(`[token-optimizer] toggle panel: ${panel.url}`)
     } catch (error) {
