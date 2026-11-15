@@ -596,6 +596,7 @@ const panelDeps = {
   setOptions: (changes) => ({ rows: [], file: "", warnings: [], backups: [], errors: [], changes }),
   getPlugins: () => ({ rows: [], warnings: [], files: [] }),
   setPlugins: (changes) => ({ rows: [], warnings: [], files: [], backups: [], errors: [], changes }),
+  getReport: () => "session tokens: 42",
 }
 const panel = await startPanel({ ...panelDeps, port: 0 })
 check("panel: serves the toggle page", (await (await fetch(panel.url)).text()).includes("token-optimizer"))
@@ -603,6 +604,8 @@ check(
   "panel: health marker answers",
   (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",
 )
+const pReport = await (await fetch(`${panel.url}api/report`)).json()
+check("panel: report endpoint returns stats text", pReport.text === "session tokens: 42")
 const pOpts = await (await fetch(`${panel.url}api/options`)).json()
 check("panel: options GET returns rows", pOpts.rows?.length === 1 && pOpts.rows[0].key === "rtk")
 const pPost = await (

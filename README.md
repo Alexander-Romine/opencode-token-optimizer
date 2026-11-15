@@ -87,11 +87,11 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
 }
 ```
 
-Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette). The report ends with a **`toggle panel : http://127.0.0.1:47891/`** line - that URL is the settings UI: the plugin's server part serves a localhost page (127.0.0.1 only, first free port from 47891). **In Desktop, `/tokens` opens that URL straight in the side browser pane** - the same pane where project previews open - by asking the app's built-in `Browser` contract; the old text-report dialog is only a fallback when no browser pane is attached (the report itself stays available as `/tokens-report`). In the TUI, `/tokens` shows the report as before; open the URL in any local browser there.
+Restart OpenCode, then run **`/tokens`** - one command for everything. The plugin's server part serves a localhost page (127.0.0.1 only, first free port from 47891) with a **Statistics** section on top (the same report the TUI shows: billed input/output/cache/cost per session, savings, dedupe, rotation, RAM-cache counters) followed by every toggle below. **In Desktop, `/tokens` opens that page straight in the side browser pane** - the same pane where project previews open - via the app's built-in `Browser` contract; if no pane is attached, a toast prints the URL instead. In the TUI, `/tokens` still renders the report as text (it also prints the panel URL) - open that URL in any local browser.
 
-The **toggle panel** page has four sections - **Optimizations** (compression, dedupe, rotation, RTK, caveman, RAM cache), **Structural transforms** (all nine `tool.*` transforms), **Companion plugins** (the config-level ones) and **Installed plugins** (whole-plugin on/off via `-<id>` directives). Rows carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) right in their description. Every apply edits `opencode.json` with the same guarantees as the installer - timestamped backup, merge never overwrite, strict JSON only (a JSONC config is refused with a hand-edit hint), retired offerings stripped, unknown keys preserved - and config hot-reload picks the changes up a couple of seconds later. External installs (the agents collection, cc-switch) stay with `Install.cmd`; the page's footer says so.
+The page's toggle sections are **Optimizations** (compression, dedupe, rotation, RTK, caveman, RAM cache), **Structural transforms** (all nine `tool.*` transforms), **Companion plugins** (the config-level ones) and **Installed plugins** (whole-plugin on/off via `-<id>` directives). Rows carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) right in their description. Every apply edits `opencode.json` with the same guarantees as the installer - timestamped backup, merge never overwrite, strict JSON only (a JSONC config is refused with a hand-edit hint), retired offerings stripped, unknown keys preserved - and config hot-reload picks the changes up a couple of seconds later. External installs (the agents collection, cc-switch) stay with `Install.cmd`; the page's footer says so.
 
-In Desktop, the GUI half adds **`/plugins`** and **`/optimize`** as slash commands/dialogs on top of the same machinery - those need Desktop **2.3.0+** (the GUI SDK's `./rpc` export does not exist in older app builds; on older builds the commands fail to register and the localhost panel above is the way in).
+The Desktop GUI half is deliberately just that one `/tokens` command - no dialogs. It needs Desktop **2.3.0+** (older app builds lack the GUI SDK's `./rpc` export, so no commands register; the localhost URL above works regardless).
 
 ## Build
 
@@ -103,7 +103,7 @@ npm run typecheck
 npm run build:native      # explicit rebuild of the Rust addon
 npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
-node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + transforms + RAM cache + /plugins + /optimize + conflicts + localhost panel
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + transforms + RAM cache + conflicts + localhost panel (stats + toggles)
 node scripts/e2e-install-test.mjs  # companion add/remove end-to-end against a throwaway config
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
@@ -211,9 +211,8 @@ Quality rules that hold by construction:
 - **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
 - **Caveman terse responses** (`caveman.enabled`, off by default): a system-prompt instruction to answer first with no filler - code, paths and errors stay verbatim
 - `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
-- `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - in the TUI it renders the report; in Desktop it opens the **toggle panel** in the side browser pane (the report dialog is the fallback, `/tokens-report` always shows it)
-- The **toggle panel** (`http://127.0.0.1:47891/`, served by the plugin's server part) flips whole plugins on/off and this plugin's own features/transforms from one localhost page - rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled; built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
-- `/plugins` and `/optimize` (Desktop GUI, needs Desktop 2.3.0+) toggle the same rows as in-app dialogs - same backup/merge/JSONC guarantees as the installer, config hot-reload, no separate window
+- `/tokens` - one command for everything: in the TUI it shows billed input/output/cache/cost per session vs. what the plugin removed; in Desktop it opens the localhost page (statistics on top, all toggles below) in the side browser pane
+- The **localhost page** (`http://127.0.0.1:47891/`, served by the plugin's server part) shows the full statistics report plus every toggle: whole plugins on/off, this plugin's features and transforms - rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled; built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)
 - Optional output-token budget (`budgetMaxTokens`) pinned to every agent-loop request
@@ -239,7 +238,7 @@ Companions are merged into your existing `opencode.json` exactly like the main p
 
 ## Plugin conflicts
 
-`/plugins` surfaces two kinds of conflict. Both are computed from what is actually installed and documented by the plugins involved - nothing is guessed:
+The localhost panel surfaces two kinds of conflict. Both are computed from what is actually installed and documented by the plugins involved - nothing is guessed:
 
 1. **Duplicate plugin id** - the same plugin declared by two *different* paths (for example a global entry and a project entry pointing at different copies). OpenCode's supervisor keeps the first occurrence and reports the rest as `Duplicate plugin ID: <id>`; the panel flags the row with every path it was declared by and tells you to remove one entry. The same package listed in two config files is *not* a clash - only distinct paths are.
 2. **Documented package clashes** - exact package-name matches taken from the pairs' own documentation, shown only while **both** plugins are enabled:

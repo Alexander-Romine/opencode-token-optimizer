@@ -171,7 +171,7 @@ export default Plugin.define({
     }
 
     /* ---------------------------------------------------------------- *
-     * Plugin manager (backs the Desktop `/plugins` panel)
+     * Plugin manager (backs the localhost panel's Installed plugins rows)
      * ---------------------------------------------------------------- */
 
     const pluginmgr = createPluginmgr({
@@ -183,7 +183,7 @@ export default Plugin.define({
       storage: ctx.storage,
     })
 
-    /** Feature/transform/companion toggles for the Desktop `/optimize` panel. */
+    /** Feature/transform/companion toggles for the localhost panel. */
     const optmgr = createOptmgr({ directory: ctx.location.directory })
 
     /* ---------------------------------------------------------------- *
@@ -197,6 +197,7 @@ export default Plugin.define({
         setOptions: (changes) => optmgr.set(changes),
         getPlugins: () => pluginmgr.list(),
         setPlugins: (changes) => pluginmgr.set(changes),
+        getReport: reportText,
       })
       console.log(`[token-optimizer] toggle panel: ${panel.url}`)
     } catch (error) {

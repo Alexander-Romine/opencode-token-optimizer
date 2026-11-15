@@ -29,6 +29,8 @@ export interface PanelDeps {
   getPlugins: () => unknown
   /** Applies whole-plugin changes. */
   setPlugins: (changes: Array<{ key: string; enabled: boolean }>) => unknown
+  /** The same text report `/tokens` shows in the TUI (stats section of the page). */
+  getReport: () => string | Promise<string>
   /** Preferred port; 0 lets the OS pick (still 127.0.0.1 only). */
   port?: number
 }
@@ -151,6 +153,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
     return
   }
 
+  if (method === "GET" && path === "/api/report") {
+    json(res, 200, { text: await deps.getReport() })
+    return
+  }
+
   if (method === "GET" && path === "/api/options") {
     json(res, 200, deps.getOptions())
     return
@@ -241,12 +248,22 @@ const PAGE = `<!doctype html>
   }
   button:disabled { opacity: 0.5; cursor: default; }
   .empty { color: var(--dim); padding: 0.4rem 0; }
+  #stats {
+    margin: 0; padding: 0.5rem 0.6rem; background: #101014; border: 1px solid var(--line);
+    border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+    font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    max-height: 24rem; overflow: auto;
+  }
 </style>
 </head>
 <body>
 <main>
   <h1>token-optimizer</h1>
   <p class="sub" id="file">loading…</p>
+  <section>
+    <h2>Statistics</h2>
+    <pre id="stats">loading…</pre>
+  </section>
   <div id="sections"></div>
 </main>
 <footer>
@@ -336,6 +353,14 @@ function render() {
   });
   refreshApply();
 }
+async function loadStats() {
+  try {
+    const { text } = await getJson("/api/report");
+    document.getElementById("stats").textContent = text || "(no data yet)";
+  } catch (error) {
+    document.getElementById("stats").textContent = String(error.message || error);
+  }
+}
 async function load() {
   try {
     const [opts, plugs] = await Promise.all([getJson("/api/options"), getJson("/api/plugins")]);
@@ -369,6 +394,7 @@ async function apply() {
       (backups.length ? " · backup written" : ""), "ok");
     // Re-read so toggles reflect what was actually written.
     await load();
+    await loadStats();
   } catch (error) {
     status(String(error.message || error), "err");
     refreshApply();
@@ -388,7 +414,7 @@ function isPluginKey(key) {
 document.getElementById("apply").addEventListener("click", () => void apply());
 (async () => {
   await loadPluginKeys();
-  await load();
+  await Promise.all([load(), loadStats()]);
 })();
 </script>
 </body>
