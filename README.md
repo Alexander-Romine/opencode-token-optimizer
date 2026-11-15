@@ -87,9 +87,11 @@ Then add this to your `opencode.json` (or `~/.config/opencode/opencode.json`), p
 }
 ```
 
-Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette) and **`/rotate`** to start a fresh seeded session. In Desktop, **`/plugins`** opens the whole-plugin panel: checkboxes that switch any installed plugin on or off by writing `-<id>` directives into `opencode.json` - one timestamped backup per file, merge never touches anything else, JSONC files are listed but never rewritten, and config hot-reload means no restart. Rows also carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) in their description, with a toast when you toggle or apply one - see [Plugin conflicts](#plugin-conflicts).
+Restart OpenCode, then run **`/tokens`** for the efficiency report (TUI *and* Desktop - in Desktop it's in the command palette). The report ends with a **`toggle panel : http://127.0.0.1:47891/`** line - that URL is the settings UI: the plugin's server part serves a localhost page (127.0.0.1 only, first free port from 47891). Open it in OpenCode Desktop's built-in browser (the same side panel where project previews open) or in any local browser. No GUI part, no separate window, no restart.
 
-**`/optimize`** (Desktop) is the day-to-day settings panel *inside* OpenCode - no separate window: three sections of switches for **Optimizations** (compression, dedupe, rotation, RTK, caveman, RAM cache), **Structural transforms** (all nine `tool.*` transforms) and **Companion plugins** (the config-level ones). Every apply edits `opencode.json` with the same guarantees as the installer - timestamped backup, merge never overwrite, strict JSON only (a JSONC config is refused with a hand-edit hint), retired offerings stripped, unknown keys preserved - and config hot-reload picks the changes up a couple of seconds later. External installs (the agents collection, cc-switch) stay with `Install.cmd`; the panel's footer says so.
+The **toggle panel** page has four sections - **Optimizations** (compression, dedupe, rotation, RTK, caveman, RAM cache), **Structural transforms** (all nine `tool.*` transforms), **Companion plugins** (the config-level ones) and **Installed plugins** (whole-plugin on/off via `-<id>` directives). Rows carry **conflict warnings** (same plugin id from two paths, or a documented package clash with both sides enabled) right in their description. Every apply edits `opencode.json` with the same guarantees as the installer - timestamped backup, merge never overwrite, strict JSON only (a JSONC config is refused with a hand-edit hint), retired offerings stripped, unknown keys preserved - and config hot-reload picks the changes up a couple of seconds later. External installs (the agents collection, cc-switch) stay with `Install.cmd`; the page's footer says so.
+
+In Desktop, the GUI half adds **`/plugins`** and **`/optimize`** as slash commands/dialogs on top of the same machinery - those need Desktop **2.3.0+** (the GUI SDK's `./rpc` export does not exist in older app builds; on older builds the commands fail to register and the localhost panel above is the way in).
 
 ## Build
 
@@ -101,7 +103,7 @@ npm run typecheck
 npm run build:native      # explicit rebuild of the Rust addon
 npm run build:gui         # rebuild the Desktop GUI bundle (dist/gui-experimental.cjs)
 npm run test:native       # 8 Rust unit tests
-node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + transforms + RAM cache + /plugins + /optimize + conflicts
+node test/smoke.mjs       # native load + Rust/JS byte-for-byte agreement + RTK + transforms + RAM cache + /plugins + /optimize + conflicts + localhost panel
 node scripts/e2e-install-test.mjs  # companion add/remove end-to-end against a throwaway config
 node benchmark/bench.mjs  # reproduce the numbers below
 ```
@@ -209,9 +211,9 @@ Quality rules that hold by construction:
 - **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
 - **Caveman terse responses** (`caveman.enabled`, off by default): a system-prompt instruction to answer first with no filler - code, paths and errors stay verbatim
 - `/rotate` writes a structured state file and starts a fresh session seeded from it; auto-rotation at 85% of the context window is **on by default** (`rotation.auto`), re-arming only after the pressure drops so it can never loop
-- `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - works in the TUI **and** in Desktop (command palette), via the bundled GUI part
-- `/plugins` (Desktop) toggles whole plugins on/off: rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled (row description + toggle/apply toasts); built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
-- `/optimize` (Desktop) toggles this plugin's own features, all nine transforms and the config-level companion plugins from inside OpenCode - same backup/merge/JSONC guarantees as the installer, config hot-reload, no separate window
+- `/tokens` shows billed input/output/cache/cost per session vs. what the plugin removed - works in the TUI **and** in Desktop (command palette), via the bundled GUI part; the report also prints the **toggle panel** URL
+- The **toggle panel** (`http://127.0.0.1:47891/`, served by the plugin's server part) flips whole plugins on/off and this plugin's own features/transforms from one localhost page - rows join config entries, the live inventory and leftover `-<id>` directives; **conflict detection** flags a row whose plugin id is declared by two different paths and warns about documented package clashes while both sides are enabled; built-ins and token-optimizer itself are locked, each apply backs up every file it writes, and a commented (JSONC) config is refused with a hand-edit hint instead of being rewritten
+- `/plugins` and `/optimize` (Desktop GUI, needs Desktop 2.3.0+) toggle the same rows as in-app dialogs - same backup/merge/JSONC guarantees as the installer, config hot-reload, no separate window
 - Context metering on every request by walking live objects - no serialization, ~0.1 ms
 - Route title generation, compaction summaries and one-shot generations to a cheaper model (same provider)
 - Optional output-token budget (`budgetMaxTokens`) pinned to every agent-loop request

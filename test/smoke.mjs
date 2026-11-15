@@ -587,5 +587,37 @@ check(
 
 fs.rmSync(omDir, { recursive: true, force: true })
 
+// ---- localhost toggle panel (server part serves it; no GUI needed) ----
+
+import { startPanel } from "../src/panel.ts"
+
+const panelDeps = {
+  getOptions: () => ({ rows: [{ key: "rtk", label: "RTK", desc: "d", section: "feature", enabled: true }], file: "", warnings: [] }),
+  setOptions: (changes) => ({ rows: [], file: "", warnings: [], backups: [], errors: [], changes }),
+  getPlugins: () => ({ rows: [], warnings: [], files: [] }),
+  setPlugins: (changes) => ({ rows: [], warnings: [], files: [], backups: [], errors: [], changes }),
+}
+const panel = await startPanel({ ...panelDeps, port: 0 })
+check("panel: serves the toggle page", (await (await fetch(panel.url)).text()).includes("token-optimizer"))
+check(
+  "panel: health marker answers",
+  (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",
+)
+const pOpts = await (await fetch(`${panel.url}api/options`)).json()
+check("panel: options GET returns rows", pOpts.rows?.length === 1 && pOpts.rows[0].key === "rtk")
+const pPost = await (
+  await fetch(`${panel.url}api/options`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ changes: [{ key: "rtk", enabled: false }] }),
+  })
+).json()
+check("panel: options POST applies changes", pPost.changes?.length === 1 && pPost.errors?.length === 0)
+const pPlug = await (await fetch(`${panel.url}api/plugins`)).json()
+check("panel: plugins GET returns rows", Array.isArray(pPlug.rows))
+await panel.close()
+const afterClose = await fetch(panel.url).catch(() => null)
+check("panel: close stops the server", afterClose === null)
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

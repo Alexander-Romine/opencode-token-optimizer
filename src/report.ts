@@ -43,6 +43,7 @@ export function buildReport(
   nativeDetail: string,
   rows: ReportRow[],
   cache?: RamCacheStats,
+  panelUrl?: string,
 ): string {
   const sorted = [...rows].sort((a, b) => (b.metrics?.updatedAt ?? 0) - (a.metrics?.updatedAt ?? 0))
 
@@ -122,6 +123,7 @@ export function buildReport(
           }`,
         ]
       : []),
+    ...(panelUrl ? [`toggle panel  : ${panelUrl}`] : []),
     ``,
   ]
 

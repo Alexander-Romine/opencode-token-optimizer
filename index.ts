@@ -31,6 +31,7 @@ import { StateManager, type SessionSnapshot } from "./src/state"
 import { TokenOptimizer, type PluginChange, type OptionChange } from "./src/rpc"
 import { createPluginmgr, type PluginInfoLike } from "./src/pluginmgr"
 import { createOptmgr } from "./src/optmgr"
+import { startPanel, type Panel } from "./src/panel"
 import { ToolOptimizer } from "./src/tools"
 import { nativeAvailable, nativeDetail } from "./src/native"
 
@@ -166,7 +167,7 @@ export default Plugin.define({
       } catch (error) {
         console.error("[token-optimizer] report failed:", error)
       }
-      return buildReport(options, nativeDetail, rows, optimizer.cacheStats())
+      return buildReport(options, nativeDetail, rows, optimizer.cacheStats(), panel?.url)
     }
 
     /* ---------------------------------------------------------------- *
@@ -184,6 +185,23 @@ export default Plugin.define({
 
     /** Feature/transform/companion toggles for the Desktop `/optimize` panel. */
     const optmgr = createOptmgr({ directory: ctx.location.directory })
+
+    /* ---------------------------------------------------------------- *
+     * Localhost toggle panel (Desktop's built-in browser, or any browser)
+     * ---------------------------------------------------------------- */
+
+    let panel: Panel | null = null
+    try {
+      panel = await startPanel({
+        getOptions: () => optmgr.get(),
+        setOptions: (changes) => optmgr.set(changes),
+        getPlugins: () => pluginmgr.list(),
+        setPlugins: (changes) => pluginmgr.set(changes),
+      })
+      console.log(`[token-optimizer] toggle panel: ${panel.url}`)
+    } catch (error) {
+      console.error("[token-optimizer] toggle panel failed:", error)
+    }
 
     const registration = await ctx.rpc.register(TokenOptimizer, {
       report: async () => ({ text: await reportText() }),
@@ -388,6 +406,7 @@ export default Plugin.define({
       eventLoop.abort()
       meter.dispose()
       optimizer.resetAll()
+      void panel?.close().catch(() => undefined)
       void Promise.all(
         registrations.map((entry) =>
           entry.dispose().catch(() => {
