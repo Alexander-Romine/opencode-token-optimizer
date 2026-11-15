@@ -22,6 +22,14 @@ const reportOutput: Rpc.PortableValueSchema = {
   additionalProperties: false,
 }
 
+/** URL of the localhost toggle panel; empty string when it is not running. */
+const panelUrlOutput: Rpc.PortableValueSchema = {
+  type: "object",
+  properties: { url: { type: "string" } },
+  required: ["url"],
+  additionalProperties: false,
+}
+
 const sessionInput: Rpc.PortableValueSchema = {
   type: "object",
   properties: { sessionID: { type: "string" } },
@@ -291,6 +299,8 @@ export const TokenOptimizer = Rpc.define({
   methods: {
     /** Aggregate token/efficiency report across sessions for this location. */
     report: { input: reportInput, output: reportOutput },
+    /** URL of the localhost toggle panel the server part serves ("" when down). */
+    panelUrl: { input: reportInput, output: panelUrlOutput },
     /** Force a structured state capture for one session. */
     state: { input: sessionInput, output: stateOutput },
     /** Start a fresh session seeded from the current one's structured state. */

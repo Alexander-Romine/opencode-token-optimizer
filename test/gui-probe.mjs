@@ -25,6 +25,7 @@ const provided = new Map([
     },
   ],
   ["@opencode/plugin/rpc", { Rpc: { define: (contract) => contract } }],
+  ["@opencode/plugin/gui/browser", { Browser: { __token: "browser" } }],
   ["solid-js", { createSignal: () => [() => undefined, () => {}], For: () => null, Show: () => null }],
   [
     "solid-js/web",
@@ -55,8 +56,11 @@ const ctx = {
     rpc: () => ({
       events: { on: (name, handler) => () => {} },
       report: async () => ({ text: "ok" }),
+      panelUrl: async () => ({ url: "http://127.0.0.1:47891/" }),
     }),
   },
+  use: () => () => ({ status: "pending" }),
+  sessions: { current: () => null },
   add: (registry, factory) => registered.push({ registry, factory }),
   toast: { show: () => {} },
   dialogs: { open: () => {} },

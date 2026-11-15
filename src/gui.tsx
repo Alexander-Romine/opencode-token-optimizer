@@ -17,6 +17,7 @@
  */
 import { createSignal, For, Show } from "solid-js"
 import { Command, Plugin } from "@opencode/plugin/gui"
+import { Browser } from "@opencode/plugin/gui/browser"
 
 import {
   TokenOptimizer,
@@ -67,6 +68,7 @@ export default Plugin.define({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- app-provided context; exact type needs the app's SetupContext generic
 function setupBody(ctx: any) {
     const optimizer = ctx.client.rpc(TokenOptimizer)
+    const browser = ctx.use(Browser)
 
     // Rotation notices, mirroring the TUI part's toast.
     const unsubscribe = optimizer.events.on("rotated", (event: unknown) => {
@@ -78,14 +80,57 @@ function setupBody(ctx: any) {
       })
     })
 
+    ctx.add(Command, () => {
+      const live = browser()
+      const session = ctx.sessions.current()
+      return {
+        id: "tokens",
+        title: "Token optimizer panel",
+        description: "Open the localhost toggle panel in the side browser",
+        keywords: "tokens usage cost rtk caveman efficiency settings toggle",
+        group: "Token optimizer",
+        // Makes it a real composer slash command: /tokens in Desktop.
+        slash: { name: "tokens" },
+        section: "prompt" as const,
+        run: async () => {
+          try {
+            // Preferred path: same side browser pane project previews use.
+            if (live.status === "active" && session) {
+              const { url } = (await optimizer.panelUrl({})) as { url: string }
+              const target = url || "http://127.0.0.1:47891/"
+              if (live.value.canOpen(session, target)) {
+                live.value.open(session, target)
+                return
+              }
+            }
+            // Fallback (no browser pane / panel down): the text report dialog.
+            const { text } = (await optimizer.report({})) as { text: string }
+            ctx.dialogs.open((dialog: { close(): void }) => (
+              <div style="display: flex; flex-direction: column; gap: 0.75rem; min-width: 32rem; max-width: 48rem;">
+                <ctx.ui.Markdown text={text} />
+                <button type="button" onClick={() => dialog.close()}>
+                  Close
+                </button>
+              </div>
+            ))
+          } catch (error) {
+            ctx.toast.show({
+              title: "token-optimizer",
+              description: error instanceof Error ? error.message : String(error),
+              variant: "error",
+            })
+          }
+        },
+      }
+    })
+
     ctx.add(Command, () => ({
-      id: "tokens",
+      id: "report",
       title: "Token optimizer report",
       description: "Show token savings, dedupe and rotation stats for this location",
-      keywords: "tokens usage cost rtk caveman efficiency",
+      keywords: "tokens usage cost report savings dedupe",
       group: "Token optimizer",
-      // Makes it a real composer slash command: /tokens in Desktop.
-      slash: { name: "tokens" },
+      slash: { name: "tokens-report" },
       section: "prompt" as const,
       run: async () => {
         try {

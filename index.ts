@@ -205,6 +205,8 @@ export default Plugin.define({
 
     const registration = await ctx.rpc.register(TokenOptimizer, {
       report: async () => ({ text: await reportText() }),
+      /** Localhost toggle panel URL for the Desktop `/tokens` browser tab. */
+      panelUrl: async () => ({ url: panel?.url ?? "" }),
       status: async () => ({ native: nativeAvailable, detail: nativeDetail }),
       /** Whole-plugin inventory for the Desktop `/plugins` panel. */
       pluginsList: async () => pluginmgr.list(),
