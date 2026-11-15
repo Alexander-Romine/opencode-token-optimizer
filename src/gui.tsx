@@ -46,10 +46,30 @@ function rowDescription(row: PluginRow): string {
 
 export default Plugin.define({
   setup(ctx) {
+    try {
+      return setupBody(ctx)
+    } catch (error) {
+      console.error("[token-optimizer] gui setup failed:", error)
+      console.error(
+        "[token-optimizer] ctx keys:", Object.keys(ctx).join(","),
+        "| typeof ctx.client:", typeof ctx.client,
+        "| typeof ctx.client.rpc:", typeof (ctx.client as { rpc?: unknown })?.rpc,
+        "| typeof ctx.add:", typeof ctx.add,
+        "| typeof ctx.toast:", typeof ctx.toast,
+        "| typeof ctx.dialogs:", typeof ctx.dialogs,
+        "| typeof ctx.ui:", typeof ctx.ui,
+      )
+      throw error
+    }
+  },
+})
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- app-provided context; exact type needs the app's SetupContext generic
+function setupBody(ctx: any) {
     const optimizer = ctx.client.rpc(TokenOptimizer)
 
     // Rotation notices, mirroring the TUI part's toast.
-    const unsubscribe = optimizer.events.on("rotated", (event) => {
+    const unsubscribe = optimizer.events.on("rotated", (event: unknown) => {
       const { to, auto } = (event as unknown as RotatedEvent).data
       ctx.toast.show({
         title: auto ? "Context rotated" : "Session rotated",
@@ -70,7 +90,7 @@ export default Plugin.define({
       run: async () => {
         try {
           const { text } = (await optimizer.report({})) as { text: string }
-          ctx.dialogs.open((dialog) => (
+          ctx.dialogs.open((dialog: { close(): void }) => (
             <div style="display: flex; flex-direction: column; gap: 0.75rem; min-width: 32rem; max-width: 48rem;">
               <ctx.ui.Markdown text={text} />
               <button type="button" onClick={() => dialog.close()}>
@@ -186,7 +206,7 @@ export default Plugin.define({
           }
         }
 
-        ctx.dialogs.open((dialog) => (
+        ctx.dialogs.open((dialog: { close(): void }) => (
           <ctx.ui.Dialog
             title="Plugins"
             description="Switch whole plugins on or off. Each apply writes opencode.json with a timestamped backup."
@@ -226,7 +246,7 @@ export default Plugin.define({
                           hideLabel
                           checked={row.enabled}
                           disabled={row.locked}
-                          onChange={(enabled) => toggle(row.key, enabled)}
+                          onChange={(enabled: boolean) => toggle(row.key, enabled)}
                         />
                       </ctx.ui.SettingsRow>
                     )}
@@ -336,7 +356,7 @@ export default Plugin.define({
                     label={`Enable ${row.label}`}
                     hideLabel
                     checked={row.enabled}
-                    onChange={(enabled) => toggle(row.key, enabled)}
+                    onChange={(enabled: boolean) => toggle(row.key, enabled)}
                   />
                 </ctx.ui.SettingsRow>
               )}
@@ -344,7 +364,7 @@ export default Plugin.define({
           </ctx.ui.SettingsSection>
         )
 
-        ctx.dialogs.open((dialog) => (
+        ctx.dialogs.open((dialog: { close(): void }) => (
           <ctx.ui.Dialog
             title="Token optimizer"
             description={
@@ -398,5 +418,4 @@ export default Plugin.define({
     }))
 
     return () => unsubscribe()
-  },
-})
+}
