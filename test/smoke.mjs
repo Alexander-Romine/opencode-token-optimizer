@@ -617,6 +617,12 @@ check(
   pageText.includes('feature: "Token optimizations"') && pageText.includes('companion: "External plugins"'),
 )
 check(
+  "panel: external-plugin rows render a trash remove button",
+  pageText.includes('row.section === "companion" && row.enabled') &&
+    pageText.includes('button[data-del]') &&
+    pageText.includes("removeCompanion"),
+)
+check(
   "panel: health marker answers",
   (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",
 )

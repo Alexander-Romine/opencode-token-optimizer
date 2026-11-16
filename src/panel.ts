@@ -265,6 +265,13 @@ const PAGE = `<!doctype html>
   .sw input:checked + span { background: var(--accent); }
   .sw input:checked + span::after { transform: translateX(18px); }
   .sw input:disabled + span { opacity: 0.4; }
+  .row .trash {
+    background: transparent; border: 1px solid transparent; color: var(--dim);
+    padding: 0.35rem; border-radius: 6px; cursor: pointer; flex: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .row .trash:hover { color: var(--err); border-color: var(--line); }
+  .row .trash.armed { background: var(--err); color: #fff; border-color: var(--err); }
   footer {
     position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
     border-top: 1px solid var(--line); padding: 0.75rem 1rem;
@@ -433,16 +440,54 @@ function toggleRow(key, enabled) {
   row.enabled = enabled;
   refreshApply();
 }
+const TRASH_SVG =
+  '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">' +
+  '<path d="M6 1.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5V2h2.5a.5.5 0 0 1 0 1h-11a.5.5 0 0 1 0-1H6v-.5z' +
+  'M4.5 6.5h7l-.56 7.1a.5.5 0 0 1-.5.4H5.56a.5.5 0 0 1-.5-.4L4.5 6.5z"/></svg>';
 function rowHtml(row) {
   const locked = row.locked ? " disabled" : "";
   const checked = row.enabled ? " checked" : "";
-  return '<div class="row">' +
+  // External plugins: trash on the left, armed by the first click.
+  const trash = row.section === "companion" && row.enabled && !row.locked
+    ? '<button class="trash" data-del="' + esc(row.key) +
+      '" title="Remove from config (backup written first)" aria-label="Remove ' + esc(row.label) + '">' +
+      TRASH_SVG + "</button>"
+    : "";
+  return '<div class="row">' + trash +
     '<div class="txt"><div class="label">' + esc(row.label) + "</div>" +
     '<div class="desc">' + esc(row.detail || row.desc || "") +
     (row.conflict ? ' <span class="warn">⚠ ' + esc(row.conflict) + "</span>" : "") +
     "</div></div>" +
     '<label class="sw"><input type="checkbox" data-key="' + esc(row.key) + '"' + checked + locked +
     '><span></span></label></div>';
+}
+// Trash on an External plugins row: first click arms (red), second click
+// strips the package from the config through the same optmgr pipeline as
+// unchecking + Apply - timestamped backup, merge never overwrite, JSONC
+// refused with a hint.
+async function removeCompanion(key, btn) {
+  const row = current.get(key);
+  if (!row) return;
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.classList.add("armed");
+    status("click the trash again to remove " + row.label + " (backup written first)", "");
+    return;
+  }
+  btn.disabled = true;
+  status("removing " + row.label + "…", "");
+  try {
+    const res = await postJson("/api/options", { changes: [{ key, enabled: false }] });
+    const errors = res.errors || [];
+    if (errors.length) status(errors.join(" · "), "err");
+    else status(row.label + " removed from " + (res.file || "config") +
+      ((res.backups || []).length ? " · backup written" : ""), "ok");
+    await load();
+    await loadStats();
+  } catch (error) {
+    status(String(error.message || error), "err");
+    btn.disabled = false;
+  }
 }
 function render() {
   const host = document.getElementById("sections");
@@ -461,6 +506,9 @@ function render() {
   host.innerHTML = html;
   host.querySelectorAll("input[type=checkbox]").forEach((el) => {
     el.addEventListener("change", () => toggleRow(el.dataset.key, el.checked));
+  });
+  host.querySelectorAll("button[data-del]").forEach((btn) => {
+    btn.addEventListener("click", () => void removeCompanion(btn.dataset.del, btn));
   });
   refreshApply();
 }
