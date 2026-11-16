@@ -493,6 +493,302 @@ const jsx = 'const el = <div className="x">hi</div>'
 check("transform: non-page markup untouched", transformText(jsx, "bash", htmlOn) === jsx)
 check("transform: html untouched by default", transformText(page, "bash", toolDefaults).includes("<html"))
 
+// ---- second batch: inline JSON / markdown / URL params / logs / hunks / traces ----
+
+const inlineOn = { ...toolDefaults, compactJsonInline: true }
+const inlineJson = JSON.stringify(
+  { name: "x", items: Array.from({ length: 8 }, (_, i) => ({ i, label: `item ${i}` })) },
+  null,
+  2,
+)
+const inlineProse = `Payload:\n${inlineJson}\nDone.`
+const inlineOut = transformText(inlineProse, "bash", inlineOn)
+check(
+  "transform: inline JSON compacted in prose",
+  inlineOut.startsWith('Payload:\n{"name":"x"') && !inlineOut.includes('\n  "items"') && inlineOut.endsWith("\nDone."),
+  JSON.stringify(inlineOut.slice(0, 60)),
+)
+check("transform: inline JSON off by default", transformText(inlineProse, "bash", toolDefaults) === inlineProse)
+const fencedJson = "\u0060\u0060\u0060\n" + inlineJson + "\n\u0060\u0060\u0060"
+check("transform: inline JSON inside a fence untouched", transformText(fencedJson, "bash", inlineOn) === fencedJson)
+
+const mdOn = { ...toolDefaults, minifyMarkdown: true }
+const mdText = "# Title\n\n\nSome text with trailing spaces   \n\n\n\nMore"
+const mdOut = transformText(mdText, "bash", mdOn)
+check(
+  "transform: markdown blank runs collapsed, hard break kept",
+  mdOut === "# Title\n\nSome text with trailing spaces  \n\nMore",
+  JSON.stringify(mdOut),
+)
+check("transform: markdown untouched by default", transformText(mdText, "bash", toolDefaults) === mdText)
+
+const urlOn = { ...toolDefaults, stripUrlParams: true }
+const urlText = "see https://example.com/p?utm_source=x&fbclid=1&id=42#frag and https://example.com/plain"
+check(
+  "transform: tracking params stripped, real params kept",
+  transformText(urlText, "bash", urlOn) === "see https://example.com/p?id=42#frag and https://example.com/plain",
+  transformText(urlText, "bash", urlOn),
+)
+check(
+  "transform: tracking-only query removed whole",
+  transformText("https://x.io/a?utm_campaign=spring", "bash", urlOn) === "https://x.io/a",
+)
+check("transform: URL params untouched by default", transformText(urlText, "bash", toolDefaults) === urlText)
+
+const logOn = { ...toolDefaults, filterLogs: true }
+const logText = [
+  "2026-11-16T10:00:00.000Z DEBUG  entering loop",
+  "[trace] low level detail",
+  "INFO ready",
+  "ERROR disk full",
+  "DEBUG another debug line",
+  '{"level":"debug","msg":"json noise"}',
+].join("\n")
+const logOut = transformText(logText, "bash", logOn)
+check(
+  "transform: debug/trace lines dropped, info/error kept",
+  logOut ===
+    "[token-optimizer: 2 debug/trace log lines removed]\nINFO ready\nERROR disk full\n[token-optimizer: 2 debug/trace log lines removed]",
+  JSON.stringify(logOut),
+)
+check(
+  "transform: prose 'Debug this' never filtered",
+  transformText("Debug this later when ready", "bash", logOn) === "Debug this later when ready",
+)
+check("transform: logs untouched by default", transformText(logText, "bash", toolDefaults) === logText)
+
+const hunkOn = { ...toolDefaults, trimDiffHunks: true }
+const hunkHeader = ["diff --git a/f.txt b/f.txt", "--- a/f.txt", "+++ b/f.txt", "@@ -1,140 +1,140 @@"]
+const bigHunk = [...hunkHeader, ...Array.from({ length: 140 }, (_, i) => ` ctx ${i}`)].join("\n")
+const hunkOut = transformText(bigHunk, "bash", hunkOn)
+check(
+  "transform: oversized diff hunk trimmed head+tail",
+  hunkOut.includes("60 hunk lines omitted") &&
+    hunkOut.includes(" ctx 0\n") &&
+    hunkOut.includes(" ctx 139") &&
+    !hunkOut.includes(" ctx 70"),
+  `${hunkOut.split("\n").length} lines`,
+)
+const smallHunk = [...hunkHeader, ...Array.from({ length: 10 }, (_, i) => ` ctx ${i}`)].join("\n")
+check("transform: small diff hunk untouched", transformText(smallHunk, "bash", hunkOn) === smallHunk)
+check("transform: hunk trim off by default", transformText(bigHunk, "bash", toolDefaults) === bigHunk)
+
+const tracesOn = { ...toolDefaults, collapseTraces: true }
+const frames = Array.from({ length: 15 }, (_, i) => `    at fn${i} (app.js:${i + 1}:1)`)
+const traceText = frames.join("\n")
+const traceOut = transformText(traceText, "bash", tracesOn)
+check(
+  "transform: long stack trace trimmed with count",
+  traceOut.split("\n").length === 9 &&
+    traceOut.includes("7 more stack frames omitted") &&
+    traceOut.startsWith(frames[0]) &&
+    !traceOut.includes(frames[12]),
+  JSON.stringify(traceOut.split("\n").slice(-2)),
+)
+check(
+  "transform: short stack trace untouched",
+  transformText(frames.slice(0, 5).join("\n"), "bash", tracesOn) === frames.slice(0, 5).join("\n"),
+)
+check("transform: trace trim off by default", transformText(traceText, "bash", toolDefaults) === traceText)
+
+const uriPayload = "QUJD".repeat(200)
+const uriText = `data:image/png;base64,${uriPayload} end`
+check(
+  "transform: declared data-URI payload elided",
+  transformText(uriText, "bash", scrubOn) === "[token-optimizer: image/png payload of 800 chars elided] end",
+  transformText(uriText, "bash", scrubOn),
+)
+const hexRun = "a1".repeat(400)
+check(
+  "transform: long hex runs with letters elided",
+  transformText(hexRun, "bash", scrubOn) === "[token-optimizer: hex blob of 800 chars elided]",
+  transformText(hexRun, "bash", scrubOn).slice(0, 60),
+)
+check("transform: pure-digit runs never hex-scrubbed", transformText("1".repeat(800), "bash", scrubOn) === "1".repeat(800))
+
+// ---- image: PNG downscaling (pure JS codec) ----
+
+import { deflateSync } from "node:zlib"
+import { downscalePng, downscaleRequestImages } from "../src/image.ts"
+
+function pngCrc32(buf) {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i]
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length)
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(pngCrc32(body))
+  return Buffer.concat([len, body, crc])
+}
+function makePng(w, h) {
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0)
+  ihdr.writeUInt32BE(h, 4)
+  ihdr[8] = 8
+  ihdr[9] = 6
+  const stride = w * 4
+  const raw = Buffer.alloc((stride + 1) * h)
+  for (let y = 0; y < h; y++) {
+    raw[y * (stride + 1)] = 0
+    for (let x = 0; x < w; x++) {
+      const o = y * (stride + 1) + 1 + x * 4
+      raw[o] = (x * 37 + y * 11) & 0xff
+      raw[o + 1] = (x * 5 + y * 29) & 0xff
+      raw[o + 2] = ((x ^ y) * 13) & 0xff
+      raw[o + 3] = 255
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ])
+}
+
+const bigPng = makePng(96, 96)
+const smallPng = downscalePng(new Uint8Array(bigPng), 24)
+check(
+  "image: PNG shrunk to imageMaxDim",
+  smallPng !== null && smallPng.width === 24 && smallPng.height === 24 && smallPng.bytes.length < bigPng.length,
+  smallPng ? `${bigPng.length} -> ${smallPng.bytes.length} bytes` : "null",
+)
+check("image: non-PNG payload passes through", downscalePng(new Uint8Array([1, 2, 3, 4]), 24) === null)
+check("image: already-small PNG passes through", downscalePng(new Uint8Array(bigPng), 4096) === null)
+
+const bigB64 = bigPng.toString("base64")
+const imgOn = { ...toolDefaults, downscaleImages: true, imageMaxDim: 24 }
+const imgText = `screenshot: data:image/png;base64,${bigB64} end`
+const imgOut = transformText(imgText, "bash", imgOn)
+check(
+  "image: inline data URI downscaled in tool text",
+  imgOut.length < imgText.length / 2 &&
+    imgOut.startsWith("screenshot: data:image/png;base64,iVBORw0KGgo") &&
+    imgOut.endsWith(" end"),
+  `${imgText.length} -> ${imgOut.length}`,
+)
+check("image: downscaling off by default", transformText(imgText, "bash", toolDefaults) === imgText)
+
+const mediaMsgs = [
+  {
+    role: "user",
+    content: [
+      { type: "media", media: { source: { type: "base64", data: bigB64, mediaType: "image/png" }, info: {} } },
+    ],
+  },
+  {
+    role: "user",
+    content: [
+      { type: "media", media: { source: { type: "base64", data: bigB64, mediaType: "image/jpeg" }, info: {} } },
+    ],
+  },
+]
+const changedParts = downscaleRequestImages(mediaMsgs, 24)
+check(
+  "image: outgoing PNG media part downscaled, JPEG untouched",
+  changedParts === 1 &&
+    mediaMsgs[0].content[0].media.source.data.length < bigB64.length &&
+    mediaMsgs[0].content[0].media.info.width === 24 &&
+    mediaMsgs[1].content[0].media.source.data === bigB64,
+  `${changedParts} changed`,
+)
+
+// ---- chunk interning ----
+
+const internOpt = new ToolOptimizer(parseOptions({ tool: { dedupeWindow: 0, internMinChars: 100, ramCache: false } }))
+const chunk = `chunk payload ${"x".repeat(160)}`
+const i1 = { content: [{ type: "text", text: `${chunk}\n\nfirst tail` }] }
+internOpt.optimize("intern-sess", "bash", i1)
+check("intern: first sighting keeps the block", i1.content[0].text.includes(chunk))
+const i2 = { content: [{ type: "text", text: `${chunk}\n\nsecond tail` }] }
+const i2Out = internOpt.optimize("intern-sess", "bash", i2)
+check(
+  "intern: repeated block becomes a hash-verified pointer",
+  i2Out !== null && i2.content[0].text.includes("byte-identical block") && !i2.content[0].text.includes(chunk),
+  JSON.stringify(i2.content[0].text.slice(0, 80)),
+)
+const r1 = { content: [{ type: "text", text: `${chunk}\n\nread A` }] }
+const r2 = { content: [{ type: "text", text: `${chunk}\n\nread B` }] }
+internOpt.optimize("intern-sess", "read", r1)
+internOpt.optimize("intern-sess", "read", r2)
+check("intern: read output never interned", r2.content[0].text.includes(chunk))
+
+// ---- pressure-aware budgets ----
+
+const pressureOpt = new ToolOptimizer(
+  parseOptions({
+    tool: { pressureRouting: true, pressurePct: 75, pressureScale: 0.5, dedupeMinChars: 1500, ramCache: false },
+  }),
+)
+const thousand = "p".repeat(1000)
+pressureOpt.optimize("p-sess", "bash", { content: [{ type: "text", text: `${thousand} one` }] })
+pressureOpt.setPressure("p-sess", 50)
+const relaxedOut = pressureOpt.optimize("p-sess", "bash", { content: [{ type: "text", text: `${thousand} one` }] })
+check("pressure: relaxed session keeps the normal dedupe threshold", relaxedOut !== null && relaxedOut.deduped === false)
+pressureOpt.setPressure("p-sess", 80)
+const tightOut = pressureOpt.optimize("p-sess", "bash", { content: [{ type: "text", text: `${thousand} one` }] })
+check("pressure: tight session stubs repeats earlier", tightOut !== null && tightOut.deduped === true)
+
+const tierOpt = new ToolOptimizer(
+  parseOptions({ tool: { pressureRouting: true, pressurePct: 75, pressureScale: 0.5, dedupeWindow: 0, ramCache: true } }),
+)
+const tierText = `{"k":"${"z".repeat(400)}"}`
+tierOpt.setPressure("t-sess", 90)
+tierOpt.optimize("t-sess", "bash", { content: [{ type: "text", text: tierText }] })
+const tierMisses1 = tierOpt.cacheStats().misses
+tierOpt.setPressure("t-sess", 10)
+tierOpt.optimize("t-sess", "bash", { content: [{ type: "text", text: tierText }] })
+const tierMisses2 = tierOpt.cacheStats().misses
+check("pressure: cache key separates pressure tiers", tierMisses1 === 1 && tierMisses2 === 2, `${tierMisses1} -> ${tierMisses2}`)
+
+// ---- rotation: history digest fallback ----
+
+import { StateManager } from "../src/state.ts"
+
+const digestDir = fs.mkdtempSync(path.join(os.tmpdir(), "tokenopt-digest-"))
+let prompted = ""
+const digestMessages = [
+  { type: "user", content: [{ type: "text", text: "fix the flaky test in CI" }] },
+  {
+    type: "assistant",
+    content: [{ type: "text", text: "Reproduced the failure and patched the retry path." }, { type: "tool", tool: "bash" }],
+  },
+]
+const digestDeps = {
+  directory: digestDir,
+  getSession: async () => ({ id: "s1", title: "Digest", agent: "build", model: { providerID: "p", id: "m" } }),
+  getContext: async () => digestMessages,
+  createSession: async () => ({ id: "s2" }),
+  promptSession: async (_id, text) => {
+    prompted = text
+  },
+}
+const digestMgr = new StateManager(digestDeps, parseOptions({}))
+const digestCap = await digestMgr.capture("s1")
+check(
+  "digest: capture falls back to a transcript digest",
+  digestCap.usedDigest === true &&
+    digestCap.text.includes("fix the flaky test") &&
+    digestCap.text.includes("Tools used most: bash"),
+  JSON.stringify(digestCap.text.slice(-120)),
+)
+await digestMgr.rotate("s1")
+check("digest: rotate prompt resumes from the digest", prompted.includes("Resume from the history digest above."))
+const digestOffMgr = new StateManager(digestDeps, parseOptions({ state: { digestChars: 0 } }))
+const digestOffCap = await digestOffMgr.capture("s1")
+check(
+  "digest: disabled falls back to the placeholder",
+  digestOffCap.usedDigest === false && digestOffCap.text.includes("No compaction checkpoint yet"),
+)
+fs.rmSync(digestDir, { recursive: true, force: true })
+
 // ---- device-RAM cache ----
 
 const cacheBig = `{"payload": "${"x".repeat(300)}"}`
@@ -555,10 +851,26 @@ check("optmgr: rows cover all three sections", omGet.rows.some((r) => r.section 
 check("optmgr: reads existing option values", omRow("rtk")?.enabled === true && omRow("ramCache")?.enabled === false && omRow("compactJson")?.enabled === true, JSON.stringify(omGet.rows.slice(0, 3)))
 check("optmgr: companion install state detected", omRow("history")?.enabled === true && omRow("exa")?.enabled === true && omRow("quota")?.enabled === false)
 
+check(
+  "optmgr: second-batch feature rows present and defaulted",
+  omRow("internChunks")?.enabled === true &&
+    omRow("historyDigest")?.enabled === true &&
+    omRow("downscaleImages")?.enabled === false &&
+    omRow("pressureRouting")?.enabled === false,
+)
+check(
+  "optmgr: second-batch transform rows present",
+  ["compactJsonInline", "minifyMarkdown", "stripUrlParams", "filterLogs", "trimDiffHunks", "collapseTraces"].every(
+    (key) => omRow(key)?.section === "transform" && omRow(key)?.enabled === false,
+  ),
+)
+
 const omSet = om.set([
   { key: "rtk", enabled: false },
   { key: "ramCache", enabled: true },
   { key: "scrubBase64", enabled: true },
+  { key: "historyDigest", enabled: false },
+  { key: "filterLogs", enabled: true },
   { key: "quota", enabled: true },
   { key: "history", enabled: false },
   { key: "exa", enabled: false },
@@ -583,6 +895,11 @@ check("optmgr: custom keys and retired packages handled", omWritten.custom?.keep
 check(
   "optmgr: unknown option keys preserved",
   omEntry.options.enabled === undefined && omEntry.options.charsPerToken === undefined && typeof omEntry.options.tool === "object",
+)
+check(
+  "optmgr: history digest writes state.digestChars, filterLogs writes tool.filterLogs",
+  omEntry.options.state?.digestChars === 0 && omEntry.options.tool.filterLogs === true,
+  JSON.stringify({ state: omEntry.options.state, filterLogs: omEntry.options.tool.filterLogs }),
 )
 
 fs.rmSync(omDir, { recursive: true, force: true })

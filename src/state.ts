@@ -46,6 +46,8 @@ export interface StateDeps {
 export interface CapturedState {
   text: string
   path: string
+  /** True when the working summary fell back to the transcript digest. */
+  usedDigest: boolean
 }
 
 function readSummary(message: unknown): string | undefined {
@@ -88,11 +90,72 @@ function formatMetrics(metrics: SessionMetrics | undefined, charsPerToken: numbe
   return lines.join("\n")
 }
 
+/** One transcript entry clipped for the digest (role prefix included later). */
+const DIGEST_ENTRY_CHARS = 240
+/** How many tool names the digest tally lists. */
+const DIGEST_TALLY = 8
+
+/**
+ * Bounded digest of the raw transcript, used when the session has no
+ * compaction checkpoint yet: newest-first walk until `budget` chars are
+ * spent, each text entry clipped to ~240 chars, plus a tally of the most
+ * used tools. Entries print chronologically (the walk collects them in
+ * reverse). Returns `undefined` when there is nothing worth carrying.
+ */
+function buildDigest(messages: readonly unknown[], budget: number): string | undefined {
+  if (budget <= 0) return undefined
+  const entries: string[] = []
+  const tools = new Map<string, number>()
+  let used = 0
+
+  for (let i = messages.length - 1; i >= 0 && used < budget; i--) {
+    const message = messages[i] as { type?: string; content?: unknown } | null
+    if (!message || (message.type !== "user" && message.type !== "assistant")) continue
+    if (!Array.isArray(message.content)) continue
+    for (const part of message.content) {
+      const candidate = part as { type?: string; text?: string; tool?: string } | null
+      if (!candidate) continue
+      if (candidate.type === "tool" && typeof candidate.tool === "string") {
+        tools.set(candidate.tool, (tools.get(candidate.tool) ?? 0) + 1)
+        continue
+      }
+      if (candidate.type !== "text" || typeof candidate.text !== "string") continue
+      const clean = candidate.text.replace(/\s+/g, " ").trim()
+      if (!clean) continue
+      const clipped = clean.length > DIGEST_ENTRY_CHARS ? `${clean.slice(0, DIGEST_ENTRY_CHARS - 1)}…` : clean
+      const line = `${message.type === "user" ? "user" : "assistant"}: ${clipped}`
+      entries.push(line)
+      used += line.length
+      if (used >= budget) break
+    }
+  }
+
+  if (entries.length === 0 && tools.size === 0) return undefined
+  entries.reverse() // walk was newest-first; the digest reads chronologically
+
+  const lines: string[] = []
+  if (tools.size > 0) {
+    const tally = [...tools.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, DIGEST_TALLY)
+      .map(([name, count]) => `${name} ×${count}`)
+    lines.push(`Tools used most: ${tally.join(" · ")}`, ``)
+  }
+  lines.push(...entries)
+  const digest = lines.join("\n")
+  return digest.length > budget ? `${digest.slice(0, budget - 1)}…` : digest
+}
+
 export class StateManager {
-  constructor(
-    private readonly deps: StateDeps,
-    private readonly options: Options,
-  ) {}
+  // Plain fields instead of parameter properties: Node's type-stripping mode
+  // (used by the .mjs tests) cannot parse `constructor(private ...)`.
+  private readonly deps: StateDeps
+  private readonly options: Options
+
+  constructor(deps: StateDeps, options: Options) {
+    this.deps = deps
+    this.options = options
+  }
 
   statePath(sessionID: string): string {
     return path.join(this.deps.directory, this.options.stateDir, `${sessionID}.md`)
@@ -125,8 +188,16 @@ export class StateManager {
     ])
 
     // The compaction event hands us the checkpoint text directly; reading the
-    // transcript is only the fallback.
+    // transcript is only the fallback. With no checkpoint, a bounded digest of
+    // the raw transcript still gives the next session something to resume from.
     const summary = summaryOverride ?? derived
+    let digest: string | undefined
+    if (!summary && this.options.state.digestChars > 0) {
+      const messages = await this.deps.getContext(sessionID).catch(() => undefined)
+      digest = buildDigest(messages ?? [], this.options.state.digestChars)
+    }
+    const usedDigest = !summary && digest !== undefined
+    const working = summary ?? digest
 
     const model = session.model ? `${session.model.providerID}/${session.model.id}` : "unknown"
     const lines = [
@@ -141,7 +212,7 @@ export class StateManager {
       ``,
       `## Working summary`,
       ``,
-      summary ??
+      working ??
         "_No compaction checkpoint yet. This session has not been compacted, so only metrics and identity are captured - compact before rotating to hand over a rich summary._",
       ``,
       `## Metrics`,
@@ -154,7 +225,7 @@ export class StateManager {
     await mkdir(path.dirname(filePath), { recursive: true })
     await writeFile(filePath, lines.join("\n"), "utf8")
 
-    return { text: lines.join("\n"), path: filePath }
+    return { text: lines.join("\n"), path: filePath, usedDigest }
   }
 
   /**
@@ -182,7 +253,7 @@ export class StateManager {
       ``,
       state.text,
       ``,
-      `Resume from the "Next move" line of the working summary.`,
+      `Resume from ${state.usedDigest ? "the history digest above" : `the "Next move" line of the working summary`}.`,
       `Do not redo completed work. Re-read files from disk only when you need their current contents.`,
     ].join("\n")
 

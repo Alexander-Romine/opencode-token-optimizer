@@ -174,6 +174,12 @@ Quality rules that hold by construction:
 | unified diff (`collapseDiff`, off by default) | 14,010 | 9,977 | 28.8% | 74.0% | lossy: >=8-line unchanged runs -> 2 lines + marker; changes never touched |
 | timestamped log (`normalizeTime`, off by default) | 12,014 | 8,514 | 29.1% | 67.6% | lossy: full timestamps -> `<ts>`; bare dates untouched |
 | path-heavy log (`shortenPaths`, off by default) | 10,075 | 6,929 | 31.2% | 66.8% | lossy: this machine's home prefix -> `~` (separator-style, whole-prefix only) |
+| prose + pretty JSON (`compactJsonInline`, off by default) | 14,181 | 10,179 | 28.2% | 100% | lossy: inline JSON spans in prose re-serialized; fenced blocks untouched |
+| markdown doc (`minifyMarkdown`, off by default) | 12,001 | 11,128 | 7.3% | 100% | lossless: blank runs and trailing whitespace collapsed (hard breaks kept) |
+| URL-heavy log (`stripUrlParams`, off by default) | 12,001 | 5,995 | 50.0% | 48.3% | lossy: tracking query params (`utm_*`, `fbclid`, etc.) stripped; path and fragment stay |
+| verbose log (`filterLogs`, off by default) | 14,014 | 9,368 | 33.2% | 66.1% | lossy: DEBUG/TRACE/VERBOSE lines collapse to one count marker per run |
+| long diff hunk (`trimDiffHunks`, off by default) | 400,036 | 3,202 | 99.2% | 0.8% | lossy: hunk bodies over 100 lines keep head 60 + tail 20 with an omission marker |
+| deep stack trace (`collapseTraces`, off by default) | 9,059 | 331 | 96.3% | 3.7% | lossy: traces of >=12 frames keep the first 8 plus a count marker |
 
 Quality rules that hold by construction:
 
@@ -181,7 +187,7 @@ Quality rules that hold by construction:
 - **Every opt-in rule is lossy and says so** - the marker they leave names what was dropped (`base64 blob of 6001 chars elided`, `24 more identical lines omitted`, `<ts>` standing in for a timestamp). Each also has a **shape gate** so ordinary text that merely looks similar (JSX with tags, prose mentioning dates, a short diff hunk, a 2-line stack) passes through untouched - smoke-tested.
 - **`read` output is excluded entirely**, so what you read is byte-for-byte what `edit`'s `oldString` must match.
 - Transforms run after the dedupe hash is computed over the original bytes - a whitespace-variant of the same JSON can never satisfy the "byte-identical" dedupe claim (smoke-tested).
-- Runs after RTK, before `api.compress`; the Rust hot path and its byte-identical JS fallback are unchanged (all five new transforms are TypeScript-only by design).
+- Runs after RTK, before `api.compress`; the Rust hot path and its byte-identical JS fallback are unchanged (all transforms are TypeScript-only by design).
 
 **Device-RAM cache** (`tool.ramCache`, on by default; `tool.ramCacheChars` budget, default 2,000,000 chars): the full RTK + transform + compress result for a `(tool, command, exact original bytes)` key is memoized in a bounded in-process LRU, so a repeat skips the whole pipeline. The key **is** the input - a hit can never be stale or foreign. Inputs under 256 chars don't get a slot (recompute is cheaper), the oldest entries evict first at the budget, and `/tokens` shows the live hit/miss counters. Measured on a 100,116-char result: **0.41 ms full pipeline -> 0.13 ms on a hit (~3x)**, and the saving is pure plugin CPU - the model never sees a different byte. Cleared on `resetAll` only (plugin unload), not per session.
 
@@ -205,7 +211,11 @@ Quality rules that hold by construction:
 ## Features
 
 - Tool output is cleaned and capped in Rust: ANSI/control stripping, CRLF normalization, blank-run collapse, head+tail truncation with an explicit omission marker
-- **Structural transforms** (`tool.compactJson` + `tool.collapseTable` on by default, lossless; `tool.scrubBase64`, `tool.collapseRepeats`, `tool.collapseStacks`, `tool.collapseDiff`, `tool.stripHtml`, `tool.normalizeTime`, `tool.shortenPaths` opt-in, lossy with honest markers and shape gates): JSON whitespace, table padding, base64 blobs, repeated lines, stack frames, diff context, HTML pages, timestamps and home paths reduced before compression; the `read` tool is never touched
+- **Structural transforms** (`tool.compactJson` + `tool.collapseTable` on by default, lossless; `tool.compactJsonInline`, `tool.minifyMarkdown`, `tool.scrubBase64`, `tool.collapseRepeats`, `tool.collapseStacks`, `tool.collapseTraces`, `tool.collapseDiff`, `tool.trimDiffHunks`, `tool.filterLogs`, `tool.stripUrlParams`, `tool.stripHtml`, `tool.normalizeTime`, `tool.shortenPaths` opt-in, lossy with honest markers and shape gates): JSON whitespace, inline JSON, table padding, markdown blank runs, base64 blobs, repeated lines, stack frames, deep stack traces, diff context, oversized diff hunks, debug logs, tracking URLs, HTML pages, timestamps and home paths reduced before compression; the `read` tool is never touched
+- **Chunk interning** (`tool.internChunks`, on by default, `tool.internMinChars` 800): large blocks that already appeared in this session's recent output become a hash-verified pointer (`[token-optimizer: N chars omitted: byte-identical block from M calls ago, verified sha256:...]`), avoiding duplicate payload transmission across tool calls without hiding unique output; `read` output is never interned
+- **Image/vision downscaling** (`tool.downscaleImages`, off by default, `tool.imageMaxDim` 1024): incoming and outgoing PNG media parts and inline data URIs are downscaled in-memory before entering LLM context, slashing 50–80% of vision token costs; non-PNG payloads pass through untouched
+- **Context-pressure-aware routing** (`tool.pressureRouting`, off by default; `tool.pressurePct` 75, `tool.pressureScale` 0.5): automatically halves truncation budgets and tightens dedupe thresholds when context window utilization exceeds the threshold, preserving conversational continuity when approaching limits
+- **Session-history compaction at rotation** (`state.digestChars`, default 4000): rotation carries a bounded transcript digest of the prior session instead of raw history tail, significantly lowering the baseline token floor in the rotated session
 - **Device-RAM cache** (`tool.ramCache`, on by default, `tool.ramCacheChars` budget): repeats of the same `(tool, command, bytes)` skip the whole pipeline via a bounded in-process LRU; hit/miss counters in `/tokens`
 - Byte-identical repeat results are replaced with a verified stub (per-session, window of 4, configurable)
 - **RTK command-output reduction** (`rtk.enabled`, on by default): test runs, git status/log, installs and builds are reduced to their summaries - failures and errors always kept, outputs under 1,200 chars untouched, unknown formats passed through
@@ -264,11 +274,11 @@ Ideas considered for squeezing more tokens out of OpenCode after the first relea
 | 7 | Semantic dedupe via embeddings | **rejected** | Needs an embedding model (network + cost + latency) and would hide *near*-duplicates the model may need; hash dedupe already covers the real repeats |
 | 8 | Mid-session summarization of old messages | **out-of-scope** | Message history belongs to OpenCode's own compaction; a plugin only sees tool results |
 | 9 | Minified file reads | **rejected** | Breaks `edit` - `oldString` must match the real bytes; `read` is excluded from every transform for this reason |
-| 10 | Markdown link-URL collapsing (`[text](url)` -> `text`) | **planned** | Lossless only when reference-style definitions are kept; not implemented yet |
+| 10 | Markdown minification & URL stripping | **shipped** (`tool.minifyMarkdown`, `tool.stripUrlParams`) | Blank-line runs and trailing whitespace collapsed; URL tracking query params (`utm_*`, `fbclid`, etc.) stripped |
 | 11 | JSONL/NDJSON stream compaction | **planned** | Natural extension of `compactJson` (parse-gated per line); not implemented yet |
 | 12 | Cross-session content-addressed cache on disk | **rejected** | Disk cache risks stale content after file edits, adds IO to the hot path, and session rings already cover repeats that matter |
 | 13 | Prompt-cache layout control (cache-aware block ordering) | **out-of-scope** | Prompt caching is the host/provider's job; OpenCode owns request assembly |
-| 14 | Screenshot/image downscaling | **out-of-scope** | Binary image payloads are not text; this plugin transforms text only |
+| 14 | Screenshot/image downscaling | **shipped** (`tool.downscaleImages`, `tool.imageMaxDim`) | PNG media parts and inline data-URIs downscaled to `imageMaxDim` before entering context; non-PNG passes through |
 | 15 | zstd-compress stored history | **rejected** | Storage is not the bottleneck - tokens are, and the model can never read compressed bytes |
 | 16 | Drop all diff context (keep only changed lines) | **rejected** | Without context the model cannot place a change; `collapseDiff` already takes the safe GitHub-style middle ground |
 | 17 | Base64/blob scrubbing | **shipped** (`tool.scrubBase64`, opt-in) | Honest length marker; gated at >=500 chars so ordinary tokens are untouched |

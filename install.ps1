@@ -183,6 +183,19 @@ if (-not $SkipConfig) {
                 stripHtml       = $false
                 normalizeTime   = $false
                 shortenPaths    = $false
+                minifyMarkdown  = $false
+                compactJsonInline = $false
+                stripUrlParams  = $false
+                filterLogs      = $false
+                trimDiffHunks   = $false
+                collapseTraces  = $false
+                internChunks    = $true
+                internMinChars  = 800
+                downscaleImages = $false
+                imageMaxDim     = 1024
+                pressureRouting = $false
+                pressurePct     = 75
+                pressureScale   = 0.5
                 ramCache        = $true
                 ramCacheChars   = 2000000
                 exclude         = @("write", "edit", "apply_patch")
@@ -205,6 +218,9 @@ if (-not $SkipConfig) {
             caveman        = [ordered]@{
                 enabled = $false
                 text    = ""
+            }
+            state          = [ordered]@{
+                digestChars = 4000
             }
             budgetMaxTokens = 0
             stateDir       = ".opencode/token-optimizer/state"

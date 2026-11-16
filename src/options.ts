@@ -51,6 +51,48 @@ export interface ToolOptions {
   /** Lossy: the home-directory prefix becomes `~` in path references. */
   shortenPaths: boolean
   /**
+   * Lossy: markdown list markers normalize to `-` and HTML comments are
+   * removed (outside code fences only).
+   */
+  minifyMarkdown: boolean
+  /** Lossless-ish: whole JSON values embedded in prose are re-serialized compact
+   * (parse-gated per balanced span; text that is not valid JSON is untouched). */
+  compactJsonInline: boolean
+  /** Lossy: known tracking parameters (`utm_*`, `fbclid`, ...) are stripped from URLs. */
+  stripUrlParams: boolean
+  /** Lossy: DEBUG/TRACE/VERBOSE log lines become one count marker per run. */
+  filterLogs: boolean
+  /** Lossy: hunks over ~100 lines keep head + tail with an omission marker. */
+  trimDiffHunks: boolean
+  /** Lossy: back-to-back byte-identical stack traces collapse to the first + count. */
+  collapseTraces: boolean
+  /**
+   * Verified chunk interning: a >=`internMinChars` block that already appeared
+   * in this session's recent tool output (content hash, within the window) is
+   * replaced with a pointer instead of being re-sent.
+   */
+  internChunks: boolean
+  /** Minimum block size worth interning. */
+  internMinChars: number
+  /**
+   * Downscale PNG images (inline `data:` URIs in tool text and base64/bytes
+   * media parts in outgoing requests) to at most `imageMaxDim` on their longer
+   * edge. Non-PNG payloads pass through untouched.
+   */
+  downscaleImages: boolean
+  /** Longest edge (px) a downscaled PNG may keep. */
+  imageMaxDim: number
+  /**
+   * Pressure-aware budgets: once the outgoing context passes `pressurePct` of
+   * the model's window, tool budgets tighten (`pressureScale` on `maxChars`,
+   * earlier RTK, lower dedupe/intern thresholds).
+   */
+  pressureRouting: boolean
+  /** Context-window percentage that turns tight budgets on. */
+  pressurePct: number
+  /** Multiplier applied to `maxChars` while pressure is on. */
+  pressureScale: number
+  /**
    * Device-RAM LRU: memoize the RTK+transform+compress result keyed by the
    * exact original input, so repeats skip the whole pipeline. Deterministic
    * and content-addressed - never serves one result for a different input.
@@ -94,6 +136,16 @@ export interface CavemanOptions {
   text: string
 }
 
+export interface StateOptions {
+  /**
+   * Rotation-seed digest budget in characters: when a session has no
+   * compaction checkpoint, `capture` derives a bounded digest from the
+   * transcript instead of writing an empty working summary. 0 disables it
+   * (the old "no checkpoint" placeholder returns).
+   */
+  digestChars: number
+}
+
 export interface Options {
   enabled: boolean
   /** Characters per token used by the estimator. 4 is the usual prose/code blend. */
@@ -103,6 +155,7 @@ export interface Options {
   routing: RoutingOptions
   rtk: RtkOptions
   caveman: CavemanOptions
+  state: StateOptions
   /** Output-token cap applied to every agent-loop request. 0 leaves it alone. */
   budgetMaxTokens: number
   /** Directory, relative to the project root, that holds state files. */
@@ -139,6 +192,19 @@ const DEFAULT: Options = {
     stripHtml: false,
     normalizeTime: false,
     shortenPaths: false,
+    minifyMarkdown: false,
+    compactJsonInline: false,
+    stripUrlParams: false,
+    filterLogs: false,
+    trimDiffHunks: false,
+    collapseTraces: false,
+    internChunks: true,
+    internMinChars: 800,
+    downscaleImages: false,
+    imageMaxDim: 1024,
+    pressureRouting: false,
+    pressurePct: 75,
+    pressureScale: 0.5,
     ramCache: true,
     ramCacheChars: 2_000_000,
     exclude: ["write", "edit", "apply_patch"],
@@ -146,6 +212,7 @@ const DEFAULT: Options = {
   routing: { agents: {} },
   rtk: { enabled: true, minChars: 1_200 },
   caveman: { enabled: false, text: "" },
+  state: { digestChars: 4_000 },
   budgetMaxTokens: 0,
   stateDir: ".opencode/token-optimizer/state",
   flushMs: 4_000,
@@ -196,6 +263,7 @@ export function parseOptions(raw: unknown): Options {
       routing: { agents: {} },
       rtk: { ...DEFAULT.rtk },
       caveman: { ...DEFAULT.caveman },
+      state: { ...DEFAULT.state },
     }
   }
 
@@ -233,6 +301,19 @@ export function parseOptions(raw: unknown): Options {
     stripHtml: bool(read(toolRaw, "stripHtml", "strip_html"), DEFAULT.tool.stripHtml),
     normalizeTime: bool(read(toolRaw, "normalizeTime", "normalize_time"), DEFAULT.tool.normalizeTime),
     shortenPaths: bool(read(toolRaw, "shortenPaths", "shorten_paths"), DEFAULT.tool.shortenPaths),
+    minifyMarkdown: bool(read(toolRaw, "minifyMarkdown", "minify_markdown"), DEFAULT.tool.minifyMarkdown),
+    compactJsonInline: bool(read(toolRaw, "compactJsonInline", "compact_json_inline"), DEFAULT.tool.compactJsonInline),
+    stripUrlParams: bool(read(toolRaw, "stripUrlParams", "strip_url_params"), DEFAULT.tool.stripUrlParams),
+    filterLogs: bool(read(toolRaw, "filterLogs", "filter_logs"), DEFAULT.tool.filterLogs),
+    trimDiffHunks: bool(read(toolRaw, "trimDiffHunks", "trim_diff_hunks"), DEFAULT.tool.trimDiffHunks),
+    collapseTraces: bool(read(toolRaw, "collapseTraces", "collapse_traces"), DEFAULT.tool.collapseTraces),
+    internChunks: bool(read(toolRaw, "internChunks", "intern_chunks"), DEFAULT.tool.internChunks),
+    internMinChars: Math.max(0, num(read(toolRaw, "internMinChars", "intern_min_chars"), DEFAULT.tool.internMinChars)),
+    downscaleImages: bool(read(toolRaw, "downscaleImages", "downscale_images"), DEFAULT.tool.downscaleImages),
+    imageMaxDim: clamp(num(read(toolRaw, "imageMaxDim", "image_max_dim"), DEFAULT.tool.imageMaxDim), 64, 8192),
+    pressureRouting: bool(read(toolRaw, "pressureRouting", "pressure_routing"), DEFAULT.tool.pressureRouting),
+    pressurePct: clamp(num(read(toolRaw, "pressurePct", "pressure_pct"), DEFAULT.tool.pressurePct), 10, 99),
+    pressureScale: clamp(num(read(toolRaw, "pressureScale", "pressure_scale"), DEFAULT.tool.pressureScale), 0.1, 1),
     ramCache: bool(read(toolRaw, "ramCache", "ram_cache"), DEFAULT.tool.ramCache),
     ramCacheChars: Math.max(0, num(read(toolRaw, "ramCacheChars", "ram_cache_chars"), DEFAULT.tool.ramCacheChars)),
     exclude: stringList(read(toolRaw, "exclude"), DEFAULT.tool.exclude),
@@ -261,6 +342,14 @@ export function parseOptions(raw: unknown): Options {
     text: typeof read(cavemanRaw, "text") === "string" ? (read(cavemanRaw, "text") as string) : DEFAULT.caveman.text,
   }
 
+  const state: StateOptions = {
+    digestChars: clamp(
+      num(read(stateRaw, "digestChars", "digest_chars"), DEFAULT.state.digestChars),
+      0,
+      100_000,
+    ),
+  }
+
   return {
     enabled: bool(read(root, "enabled"), DEFAULT.enabled),
     charsPerToken: clamp(num(read(root, "charsPerToken", "chars_per_token"), DEFAULT.charsPerToken), 1, 20),
@@ -269,6 +358,7 @@ export function parseOptions(raw: unknown): Options {
     routing,
     rtk,
     caveman,
+    state,
     budgetMaxTokens: Math.max(0, num(read(root, "budgetMaxTokens", "budget_max_tokens"), DEFAULT.budgetMaxTokens)),
     stateDir: str(read(stateRaw, "dir", "directory")) ?? DEFAULT.stateDir,
     flushMs: clamp(num(read(root, "flushMs", "flush_ms"), DEFAULT.flushMs), 250, 300_000),

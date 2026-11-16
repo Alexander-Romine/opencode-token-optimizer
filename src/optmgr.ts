@@ -85,9 +85,19 @@ const FEATURES: ReadonlyArray<{ key: string; label: string; desc: string }> = [
     desc: "Collapse byte-identical repeat tool results within the recent window (hash-verified).",
   },
   {
+    key: "internChunks",
+    label: "Chunk interning",
+    desc: "Large blocks that already appeared in this session's recent output become a verified pointer.",
+  },
+  {
     key: "rotate",
     label: "Auto session rotation",
     desc: "Start a fresh session at 85% of the context window; state is saved and carried over.",
+  },
+  {
+    key: "historyDigest",
+    label: "History digest on rotate",
+    desc: "Without a compaction checkpoint, rotation carries a bounded digest of the transcript instead.",
   },
   {
     key: "rtk",
@@ -104,16 +114,32 @@ const FEATURES: ReadonlyArray<{ key: string; label: string; desc: string }> = [
     label: "Device-RAM cache",
     desc: "Memoize the transform pipeline in process RAM so repeated outputs skip recomputation.",
   },
+  {
+    key: "downscaleImages",
+    label: "Downscale PNG images",
+    desc: "Shrink oversized PNGs (inline data URIs + outgoing media) to imageMaxDim; other formats pass through.",
+  },
+  {
+    key: "pressureRouting",
+    label: "Pressure-aware budgets",
+    desc: "Past pressurePct of the window, tool budgets tighten automatically (smaller maxChars, earlier stubs).",
+  },
 ]
 
 /** Structural transform rows (`tool.*`), lossless first then lossy opt-ins. */
 const TRANSFORMS: ReadonlyArray<{ key: string; label: string; desc: string }> = [
   { key: "compactJson", label: "Compact JSON", desc: "Lossless: re-serialize one-value JSON results without whitespace." },
+  { key: "compactJsonInline", label: "Compact inline JSON", desc: "Lossless: balanced JSON spans embedded in prose get the same re-serialization." },
   { key: "collapseTable", label: "Collapse tables", desc: "Lossless: strip markdown table alignment padding outside code fences." },
-  { key: "scrubBase64", label: "Scrub base64", desc: "Lossy: elide >=500-char base64 blobs with an honest length marker." },
+  { key: "minifyMarkdown", label: "Minify markdown", desc: "Lossless: collapse blank-line runs and trailing whitespace (hard breaks kept)." },
+  { key: "scrubBase64", label: "Scrub base64/hex", desc: "Lossy: elide declared data-URI payloads, >=500-char base64 and >=800-char hex blobs." },
   { key: "collapseRepeats", label: "Collapse repeated lines", desc: "Lossy: runs of >=3 identical long lines become one line + count." },
   { key: "collapseStacks", label: "Collapse stack frames", desc: "Lossy: repeated identical stack-trace frames become one + count." },
+  { key: "collapseTraces", label: "Trim long stack traces", desc: "Lossy: traces of >=12 frames keep the first 8 plus a count marker." },
   { key: "collapseDiff", label: "Collapse diff context", desc: "Lossy: long unchanged runs in unified diffs become a marker." },
+  { key: "trimDiffHunks", label: "Trim diff hunks", desc: "Lossy: hunks over 100 lines keep head 60 + tail 20 with an omission marker." },
+  { key: "filterLogs", label: "Filter debug logs", desc: "Lossy: DEBUG/TRACE/VERBOSE lines collapse to one count marker per run." },
+  { key: "stripUrlParams", label: "Strip URL tracking params", desc: "Lossy: utm_*/fbclid/... query params drop from URLs; path and fragment stay." },
   { key: "stripHtml", label: "HTML to text", desc: "Lossy: raw HTML pages become text (JSX/source never touched)." },
   { key: "normalizeTime", label: "Normalize timestamps", desc: "Lossy: full timestamps become <ts>; line order keeps chronology." },
   { key: "shortenPaths", label: "Shorten home paths", desc: "Lossy: this machine's home directory prefix becomes ~." },
@@ -202,8 +228,14 @@ function buildRows(docs: Doc[], selfDoc: Doc | null): OptionRow[] {
       case "dedupe":
         enabled = eff.tool.dedupeWindow > 0
         break
+      case "internChunks":
+        enabled = eff.tool.internChunks
+        break
       case "rotate":
         enabled = eff.rotation.auto
+        break
+      case "historyDigest":
+        enabled = eff.state.digestChars > 0
         break
       case "rtk":
         enabled = eff.rtk.enabled
@@ -213,6 +245,12 @@ function buildRows(docs: Doc[], selfDoc: Doc | null): OptionRow[] {
         break
       case "ramCache":
         enabled = eff.tool.ramCache
+        break
+      case "downscaleImages":
+        enabled = eff.tool.downscaleImages
+        break
+      case "pressureRouting":
+        enabled = eff.tool.pressureRouting
         break
       default:
         enabled = false
@@ -256,9 +294,19 @@ function applyFeature(opts: Record<string, unknown>, key: string, enabled: boole
       tool.dedupeWindow = enabled ? (current > 0 ? current : 4) : 0
       break
     }
+    case "internChunks":
+      tool.internChunks = enabled
+      break
     case "rotate":
       rotation.auto = enabled
       break
+    case "historyDigest": {
+      // Lazy `state`: configs written before this feature have no state key.
+      const state = asObject(opts.state) ?? (opts.state = {})
+      const current = typeof state.digestChars === "number" ? state.digestChars : 4000
+      state.digestChars = enabled ? (current > 0 ? current : 4000) : 0
+      break
+    }
     case "rtk":
       rtk.enabled = enabled
       break
@@ -267,6 +315,12 @@ function applyFeature(opts: Record<string, unknown>, key: string, enabled: boole
       break
     case "ramCache":
       tool.ramCache = enabled
+      break
+    case "downscaleImages":
+      tool.downscaleImages = enabled
+      break
+    case "pressureRouting":
+      tool.pressureRouting = enabled
       break
   }
 }

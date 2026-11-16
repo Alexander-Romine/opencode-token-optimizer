@@ -35,6 +35,7 @@ import { startPanel, type Panel } from "./src/panel"
 import { formatUsageWindows, updateUsage, getBudget, setBudget, type UsageSnapshot } from "./src/usage"
 import { searchPlugins } from "./src/discover"
 import { ToolOptimizer } from "./src/tools"
+import { downscaleRequestImages } from "./src/image"
 import { nativeAvailable, nativeDetail } from "./src/native"
 
 interface ModelRef {
@@ -121,11 +122,32 @@ export default Plugin.define({
       return created
     }
 
+    /** Window size (tokens) for the session's current model, 0 when unknown. */
+    async function sessionWindow(sessionID: string): Promise<number> {
+      const ref = sessionModel.get(sessionID)
+      if (!ref) return 0
+      return contextWindow(ref)
+    }
+
+    /**
+     * Feed the pressure reading used by `tool.pressureRouting`: the session's
+     * context as a percentage of its model's window. Shared lookup with the
+     * rotation threshold - one model inventory, one answer.
+     */
+    async function refreshPressure(sessionID: string, chars: number): Promise<void> {
+      try {
+        const window = await sessionWindow(sessionID)
+        if (!window) return
+        const tokens = charsToTokens(chars, options.charsPerToken)
+        optimizer.setPressure(sessionID, (tokens / window) * 100)
+      } catch (error) {
+        console.error("[token-optimizer] pressure update failed:", error)
+      }
+    }
+
     async function maybeRotate(sessionID: string, chars: number) {
       try {
-        const ref = sessionModel.get(sessionID)
-        if (!ref) return
-        const window = await contextWindow(ref)
+        const window = await sessionWindow(sessionID)
         if (!window) return
 
         const limit = Math.floor((window * options.rotation.thresholdPct) / 100)
@@ -318,29 +340,24 @@ export default Plugin.define({
       system.push({ type: "text", text: cavemanText } as { type: string; text: string })
     }
 
-    if (options.budgetMaxTokens > 0 || options.rotation.auto) {
-      registrations.push(
-        await ctx.session.hook("context", (event) => {
-          applyCaveman(event.system)
-          const chars = estimateChars(event.system, event.messages, event.tools)
-          meter.noteContext(event.sessionID, chars)
+    // One registration for everything the outgoing request touches:
+    // caveman instruction, PNG downscaling of media parts, metering, token
+    // budget, auto-rotation and the pressure reading. Always registered -
+    // metering is worth having even when every optional feature is off.
+    registrations.push(
+      await ctx.session.hook("context", (event) => {
+        applyCaveman(event.system)
+        if (options.tool.downscaleImages) {
+          downscaleRequestImages(event.messages, options.tool.imageMaxDim)
+        }
+        const chars = estimateChars(event.system, event.messages, event.tools)
+        meter.noteContext(event.sessionID, chars)
 
-          if (options.budgetMaxTokens > 0) event.options.maxTokens = options.budgetMaxTokens
-          if (options.rotation.auto) void maybeRotate(event.sessionID, chars)
-        }),
-      )
-    } else {
-      // Metering is still worth having even when neither feature is on.
-      registrations.push(
-        await ctx.session.hook("context", (event) => {
-          applyCaveman(event.system)
-          meter.noteContext(
-            event.sessionID,
-            estimateChars(event.system, event.messages, event.tools),
-          )
-        }),
-      )
-    }
+        if (options.budgetMaxTokens > 0) event.options.maxTokens = options.budgetMaxTokens
+        if (options.rotation.auto) void maybeRotate(event.sessionID, chars)
+        if (options.tool.pressureRouting) void refreshPressure(event.sessionID, chars)
+      }),
+    )
 
     const hasRouting =
       Boolean(options.routing.title) ||

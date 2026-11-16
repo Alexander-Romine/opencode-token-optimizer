@@ -391,6 +391,85 @@ transformRow("timestamped log (normalizeTime, lossy)", timestampLog(12_000), "ba
 transformRow("stack trace (collapseStacks, lossy)", stackTrace(10_000), "bash", { ...toolDefaults, collapseStacks: true }, "opt-in; identical frames -> one + count")
 transformRow("path-heavy log (shortenPaths, lossy)", pathHeavyLog(10_000), "bash", { ...toolDefaults, shortenPaths: true }, "opt-in; home prefix -> ~")
 
+function proseWithJson(target) {
+  const out = ["Deploy report:"]
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(
+      JSON.stringify(
+        {
+          step: i,
+          service: `service-${i % 5}`,
+          status: i % 7 === 3 ? "failed" : "ok",
+          durationMs: 120 + i,
+          tags: ["deploy", WORDS[i % WORDS.length], "nightly"],
+          detail: { region: "eu-west-1", attempt: i % 3 },
+        },
+        null,
+        2,
+      ),
+    )
+    out.push("")
+    i++
+  }
+  return out.join("\n")
+}
+
+function markdownDoc(target) {
+  const out = ["# Release notes", ""]
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(`## ${pick(WORDS)} ${i}`)
+    out.push("")
+    out.push("")
+    out.push(`${pick(WORDS)} ${pick(WORDS)} ${pick(WORDS)}  `)
+    out.push("")
+    out.push("")
+    out.push("")
+    i++
+  }
+  return out.join("\n")
+}
+
+function urlHeavyLog(target) {
+  const out = []
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(`GET https://api.example.com/v1/items/${i}?utm_source=cli&utm_medium=batch&utm_campaign=bench&fbclid=abc${i}&page=${i}&limit=50 -> 200`)
+    i++
+  }
+  return out.join("\n")
+}
+
+function verboseLog(target) {
+  const out = []
+  let i = 0
+  while (out.join("\n").length < target) {
+    const level = i % 9 === 0 ? "ERROR" : i % 3 === 0 ? "INFO" : i % 3 === 1 ? "DEBUG" : "TRACE"
+    out.push(`2026-11-13T09:${String(i % 60).padStart(2, "0")}:00.000Z ${level} worker-${i % 4} ${pick(WORDS)} ${i}`)
+    i++
+  }
+  return out.join("\n")
+}
+
+function deepStackTrace(target) {
+  const out = ["Error: benchmark failure", "    at handler (src/app.js:42:11)"]
+  let i = 0
+  while (out.join("\n").length < target) {
+    out.push(`    at step${i} (src/flow.js:${i + 10}:5)`)
+    i++
+  }
+  out.push("    at main (src/index.js:5:1)")
+  return out.join("\n")
+}
+
+transformRow("prose + pretty JSON (compactJsonInline, lossy)", proseWithJson(14_000), "bash", { ...toolDefaults, compactJsonInline: true }, "opt-in; fenced blocks untouched")
+transformRow("markdown doc (minifyMarkdown, lossless)", markdownDoc(12_000), "bash", { ...toolDefaults, minifyMarkdown: true }, "opt-in; blank runs and trailing spaces only")
+transformRow("URL-heavy log (stripUrlParams, lossy)", urlHeavyLog(12_000), "bash", { ...toolDefaults, stripUrlParams: true }, "opt-in; tracking params only")
+transformRow("verbose log (filterLogs, lossy)", verboseLog(14_000), "bash", { ...toolDefaults, filterLogs: true }, "opt-in; debug/trace runs -> one marker")
+transformRow("long diff hunk (trimDiffHunks, lossy)", diffWithLongContext(400_000), "bash", { ...toolDefaults, trimDiffHunks: true }, "opt-in; hunk bodies over 80 lines, head+tail")
+transformRow("deep stack trace (collapseTraces, lossy)", deepStackTrace(9_000), "bash", { ...toolDefaults, collapseTraces: true }, "opt-in; >8 frames, head+tail")
+
 /* ------------------------------------------------------------------ *
  * Device-RAM cache: repeat optimize() with and without memoization
  * ------------------------------------------------------------------ */
