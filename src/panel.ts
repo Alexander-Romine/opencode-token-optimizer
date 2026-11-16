@@ -313,18 +313,38 @@ const PAGE = `<!doctype html>
   }
   .addbar input::placeholder { color: var(--dim); }
   .result {
-    display: flex; gap: 1rem; align-items: center; padding: 0.5rem 0;
+    display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.65rem 0;
     border-top: 1px solid var(--line);
   }
   .result:first-of-type { border-top: 0; }
   .result .txt { flex: 1; min-width: 0; }
-  .result .name { font-weight: 600; font-size: 13px; word-break: break-all; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 9px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 16px; color: #fff; text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+  }
+  .result .rowline {
+    display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap;
+  }
+  .result .name {
+    font-weight: 600; font-size: 13.5px; word-break: break-all;
+  }
+  .result a.npm {
+    color: var(--accent); font-size: 11.5px; text-decoration: none; white-space: nowrap;
+  }
+  .result a.npm:hover { text-decoration: underline; }
   .result .desc {
     color: var(--dim); font-size: 12.5px; margin-top: 2px;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .result .meta { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  .result .meta { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+  .kw {
+    display: inline-block; background: #22222a; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 999px; padding: 0 0.5rem;
+    font-size: 11px; line-height: 1.6; margin: 3px 4px 0 0; max-width: 12rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top;
+  }
 </style>
 </head>
 <body>
@@ -364,9 +384,9 @@ const PAGE = `<!doctype html>
 <script>
 "use strict";
 const SECTIONS = {
-  feature: "Optimizations",
+  feature: "Token optimizations",
   transform: "Structural transforms",
-  companion: "Companion plugins",
+  companion: "External plugins",
   plugin: "Installed plugins",
 };
 let current = new Map();   // key -> row
@@ -479,6 +499,31 @@ function isInstalled(name) {
   }
   return false;
 }
+const AVATAR_HUES = ["#6ea8fe", "#3fb950", "#d29922", "#f85149", "#a371f7", "#39c5cf"];
+function avatarHtml(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  const hue = AVATAR_HUES[hash % AVATAR_HUES.length];
+  const letter = (name.replace(/[^a-z0-9]/gi, "")[0] || "?").toUpperCase();
+  return '<div class="avatar" style="background:' + hue + '">' + esc(letter) + "</div>";
+}
+function resultHtml(r) {
+  const installed = isInstalled(r.name);
+  const chips = (r.keywords || []).map((k) => '<span class="kw">' + esc(String(k)) + "</span>").join("");
+  const meta = [r.author ? "by " + r.author : "", r.date ? String(r.date).slice(0, 10) : ""]
+    .filter(Boolean).join(" · ");
+  return '<div class="result">' + avatarHtml(r.name) +
+    '<div class="txt">' +
+    '<div class="rowline"><span class="name">' + esc(r.name) + "</span>" +
+    '<a class="npm" href="https://www.npmjs.com/package/' + encodeURIComponent(r.name) +
+    '" target="_blank" rel="noopener noreferrer">npm ↗</a></div>' +
+    '<div class="desc">' + esc(r.description || "no description published") + "</div>" +
+    (chips || meta ? '<div class="rowline">' + chips +
+      (meta ? '<span class="meta">' + esc(meta) + "</span>" : "") + "</div>" : "") +
+    "</div>" +
+    '<button class="small" data-pkg="' + esc(r.name) + '"' + (installed ? " disabled" : "") + ">" +
+    (installed ? "✓ Installed" : "Add") + "</button></div>";
+}
 async function searchPlugins() {
   const q = document.getElementById("pq").value.trim();
   const host = document.getElementById("presults");
@@ -489,13 +534,7 @@ async function searchPlugins() {
       host.textContent = "no plugins found for “" + q + "”";
       return;
     }
-    host.innerHTML = results.map((r) =>
-      '<div class="result"><div class="txt"><div class="name">' + esc(r.name) + "</div>" +
-      '<div class="desc">' + esc(r.description || "") + "</div>" +
-      (r.date ? '<div class="meta">updated ' + esc(String(r.date).slice(0, 10)) + "</div>" : "") +
-      "</div>" +
-      '<button class="small" data-pkg="' + esc(r.name) + '"' + (isInstalled(r.name) ? " disabled" : "") + ">" +
-      (isInstalled(r.name) ? "Installed" : "Add") + "</button></div>").join("");
+    host.innerHTML = results.map(resultHtml).join("");
     host.querySelectorAll("button[data-pkg]").forEach((btn) => {
       btn.addEventListener("click", () => void addPackage(btn.dataset.pkg, btn));
     });

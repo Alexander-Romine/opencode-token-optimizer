@@ -610,7 +610,12 @@ const panelDeps = {
   },
 }
 const panel = await startPanel({ ...panelDeps, port: 0 })
-check("panel: serves the toggle page", (await (await fetch(panel.url)).text()).includes("token-optimizer"))
+const pageText = await (await fetch(panel.url)).text()
+check("panel: serves the toggle page", pageText.includes("token-optimizer"))
+check(
+  "panel: section renames (token optimizations, external plugins)",
+  pageText.includes('feature: "Token optimizations"') && pageText.includes('companion: "External plugins"'),
+)
 check(
   "panel: health marker answers",
   (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",

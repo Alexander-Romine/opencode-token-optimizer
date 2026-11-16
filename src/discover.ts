@@ -15,10 +15,20 @@ export interface DiscoverResult {
   description: string
   /** ISO date of the latest publish, if npm reported one. */
   date?: string
+  /** npm publisher username (result card meta line). */
+  author?: string
+  /** Up to a handful of package keywords, shown as chips. */
+  keywords?: string[]
 }
 
 interface NpmSearchEntry {
-  package?: { name?: string; description?: string; date?: string }
+  package?: {
+    name?: string
+    description?: string
+    date?: string
+    keywords?: unknown
+    publisher?: { username?: string }
+  }
 }
 
 const SEARCH_URL = "https://registry.npmjs.org/-/v1/search"
@@ -55,6 +65,11 @@ export async function searchPlugins(query: string): Promise<DiscoverResult[]> {
     if (!pkg?.name) continue
     const item: DiscoverResult = { name: pkg.name, description: pkg.description ?? "" }
     if (pkg.date) item.date = pkg.date
+    if (pkg.publisher?.username) item.author = pkg.publisher.username
+    if (Array.isArray(pkg.keywords)) {
+      const chips = pkg.keywords.filter((k): k is string => typeof k === "string").slice(0, 4)
+      if (chips.length) item.keywords = chips
+    }
     results.push(item)
     if (results.length >= MAX_RESULTS) break
   }
