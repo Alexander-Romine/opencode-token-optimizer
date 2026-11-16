@@ -28,7 +28,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import type { PluginChange, PluginRow, PluginsListResult, PluginsSetResult } from "./rpc"
+import type { PluginChange, PluginRow, PluginsAddResult, PluginsListResult, PluginsSetResult } from "./rpc"
 
 /** One plugin as `ctx.plugin.list()` reports it (structurally typed). */
 export interface PluginInfoLike {
@@ -790,5 +790,89 @@ export function createPluginmgr(options: PluginmgrOptions) {
     return { rows: finalRows.map(toPublic), warnings, files, backups, errors }
   }
 
-  return { list, set }
+  /** npm package name, optional `@scope/` and `@version` (panel lookup adds). */
+  const PACKAGE_RE = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:@[0-9A-Za-z.+-]+)?$/i
+
+  /**
+   * Appends packages to the target config's `plugins[]` (panel: Add plugins).
+   *
+   * Same guarantees as every other config write here: timestamped backup
+   * before the first write, merge never overwrite, strict JSON only. The
+   * global config is preferred - the panel must not fork the inventory into
+   * a project file - falling back to the usual writable-doc ranking.
+   * Already-declared packages are skipped, not duplicated.
+   */
+  async function add(packages: string[]): Promise<PluginsAddResult> {
+    const { docs } = loadDocs(options.directory, globalDir)
+    const result: PluginsAddResult = { added: [], skipped: [], errors: [], backups: [], file: "" }
+
+    const valid: string[] = []
+    for (const raw of packages) {
+      const pkg = String(raw ?? "").trim()
+      if (!pkg) continue
+      if (pkg.length > 214 || !PACKAGE_RE.test(pkg)) {
+        result.errors.push(`not a package name: ${pkg.slice(0, 80)}`)
+        continue
+      }
+      if (!valid.includes(pkg)) valid.push(pkg)
+    }
+    if (valid.length === 0 && result.errors.length === 0) result.errors.push("no packages given")
+
+    const globalPath = path.resolve(path.join(globalDir, "opencode.json"))
+    let doc: Doc | null = docs.find((d) => d.path === globalPath && d.writable) ?? null
+    if (!doc) doc = pickWriteDoc(docs, [], options.directory, globalDir)
+    if (!doc) {
+      // Nothing editable exists yet - but never clobber a JSONC file.
+      if (docs.some((d) => d.path === globalPath)) {
+        result.errors.push(`${globalPath}: commented (JSONC) config - add the package there by hand`)
+      } else {
+        doc = { path: globalPath, priority: Number.MAX_SAFE_INTEGER, exists: false, parsed: {}, writable: true }
+        docs.push(doc)
+      }
+    }
+    if (!doc || valid.length === 0) return result
+    result.file = doc.path
+
+    const declared = (pkg: string): boolean =>
+      docs.some((d) => {
+        const arr = d.parsed?.plugins
+        if (!Array.isArray(arr)) return false
+        return arr.some(
+          (item) =>
+            item === pkg ||
+            (!!item && typeof item === "object" && (item as { package?: unknown }).package === pkg),
+        )
+      })
+
+    const before = JSON.stringify(doc.parsed)
+    const arr = ensurePlugins(doc)
+    if (!arr) {
+      result.errors.push(`${doc.path}: "plugins" is not an array - fix it by hand`)
+      return result
+    }
+    for (const pkg of valid) {
+      if (declared(pkg)) {
+        result.skipped.push(pkg)
+        continue
+      }
+      arr.push(pkg)
+      result.added.push(pkg)
+    }
+    if (result.added.length === 0 || JSON.stringify(doc.parsed) === before) {
+      result.file = result.added.length === 0 ? "" : doc.path
+      return result
+    }
+
+    try {
+      if (doc.exists) result.backups.push(backupFile(doc.path))
+      writeFile(doc.path, doc.parsed!)
+    } catch (error) {
+      result.errors.push(`${doc.path}: write failed (${msg(error)})`)
+      result.added = []
+      result.backups = []
+    }
+    return result
+  }
+
+  return { list, set, add }
 }

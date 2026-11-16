@@ -129,6 +129,20 @@ export interface PluginsSetResult extends PluginsListResult {
   errors: string[]
 }
 
+/** Result of `pluginmgr.add()` (panel: Add plugins). */
+export interface PluginsAddResult {
+  /** Packages appended to the target config's `plugins[]`. */
+  added: string[]
+  /** Packages already declared somewhere - left untouched. */
+  skipped: string[]
+  /** Validation/write failures. */
+  errors: string[]
+  /** Timestamped backups written for this batch. */
+  backups: string[]
+  /** Config file the packages went into ("" when nothing was written). */
+  file: string
+}
+
 /** One row of the `/optimize` panel: a feature, transform or companion. */
 export interface OptionRow {
   /** Stable key: feature id, `tool.*` option name, or companion id. */

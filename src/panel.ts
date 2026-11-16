@@ -12,7 +12,9 @@
  */
 import http from "node:http"
 
-import type { OptionsSetResult } from "./rpc"
+import type { PluginsAddResult, OptionsSetResult } from "./rpc"
+import type { DiscoverResult } from "./discover"
+import type { UsageSnapshot } from "./usage"
 
 /** First port tried; scans upward on collision. */
 const DEFAULT_PORT = 47891
@@ -29,8 +31,14 @@ export interface PanelDeps {
   getPlugins: () => unknown
   /** Applies whole-plugin changes. */
   setPlugins: (changes: Array<{ key: string; enabled: boolean }>) => unknown
-  /** Two-line rolling usage text ("today" / "last 7 days") for the page. */
-  getUsage: () => string | Promise<string>
+  /** Appends packages to the config (panel: Add plugins / lookup results). */
+  addPackages: (packages: string[]) => Promise<PluginsAddResult> | PluginsAddResult
+  /** VS Code-style lookup: search npm for OpenCode plugins. */
+  discover: (query: string) => Promise<DiscoverResult[]> | DiscoverResult[]
+  /** Rolling usage snapshot: text lines + donut numbers (today / week / budget). */
+  getUsage: () => UsageSnapshot | Promise<UsageSnapshot>
+  /** Stores the user's daily token budget (donut denominator). */
+  setBudget: (budget: number) => Promise<{ budget: number }> | { budget: number }
   /** Preferred port; 0 lets the OS pick (still 127.0.0.1 only). */
   port?: number
 }
@@ -154,7 +162,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
   }
 
   if (method === "GET" && path === "/api/usage") {
-    json(res, 200, { text: await deps.getUsage() })
+    json(res, 200, await deps.getUsage())
+    return
+  }
+
+  if (method === "POST" && path === "/api/budget") {
+    const body = JSON.parse(await readBody(req)) as { budget?: unknown }
+    try {
+      json(res, 200, await deps.setBudget(Number(body.budget)))
+    } catch (error) {
+      json(res, 400, { error: error instanceof Error ? error.message : String(error) })
+    }
+    return
+  }
+
+  if (method === "GET" && path === "/api/discover") {
+    const results = await deps.discover(url.searchParams.get("q") ?? "")
+    json(res, 200, { results })
     return
   }
 
@@ -175,7 +199,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, deps:
   }
 
   if (method === "POST" && path === "/api/plugins") {
-    const body = JSON.parse(await readBody(req)) as { changes?: Array<{ key: string; enabled: boolean }> }
+    const body = JSON.parse(await readBody(req)) as {
+      changes?: Array<{ key: string; enabled: boolean }>
+      add?: unknown[]
+    }
+    if (Array.isArray(body.add)) {
+      json(res, 200, await deps.addPackages(body.add.map((pkg) => String(pkg))))
+      return
+    }
     json(res, 200, deps.setPlugins(Array.isArray(body.changes) ? body.changes : []))
     return
   }
@@ -252,8 +283,48 @@ const PAGE = `<!doctype html>
     margin: 0; padding: 0.5rem 0.6rem; background: #101014; border: 1px solid var(--line);
     border-radius: 8px; white-space: pre-wrap; word-break: break-word;
     font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
-    max-height: 24rem; overflow: auto;
   }
+  .usage { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .usage-side { flex: 1; min-width: 260px; }
+  .donut {
+    position: relative; width: 132px; height: 132px; border-radius: 50%; flex: none;
+    background: #2a2a33;
+  }
+  .donut::before {
+    content: ""; position: absolute; inset: 15px; border-radius: 50%; background: var(--panel);
+  }
+  .donut span {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 18px; z-index: 1;
+  }
+  .budget {
+    display: flex; gap: 0.5rem; align-items: center; margin-top: 0.6rem;
+    font-size: 13px; color: var(--dim); flex-wrap: wrap;
+  }
+  .budget input {
+    width: 8rem; background: #101014; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 0.35rem 0.5rem; font: inherit;
+  }
+  .small { padding: 0.35rem 0.8rem; font-size: 13px; font-weight: 600; }
+  .addbar { display: flex; gap: 0.5rem; margin-bottom: 0.25rem; }
+  .addbar input {
+    flex: 1; min-width: 0; background: #101014; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 0.45rem 0.6rem; font: inherit;
+  }
+  .addbar input::placeholder { color: var(--dim); }
+  .result {
+    display: flex; gap: 1rem; align-items: center; padding: 0.5rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .result:first-of-type { border-top: 0; }
+  .result .txt { flex: 1; min-width: 0; }
+  .result .name { font-weight: 600; font-size: 13px; word-break: break-all; }
+  .result .desc {
+    color: var(--dim); font-size: 12.5px; margin-top: 2px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .result .meta { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -262,9 +333,27 @@ const PAGE = `<!doctype html>
   <p class="sub" id="file">loading…</p>
   <section>
     <h2>Usage</h2>
-    <pre id="stats">loading…</pre>
+    <div class="usage">
+      <div class="donut" id="donut"><span id="pct">0%</span></div>
+      <div class="usage-side">
+        <pre id="stats">loading…</pre>
+        <div class="budget">
+          <label for="budget">daily budget</label>
+          <input id="budget" type="number" min="1000" max="100000000" step="1000">
+          <button id="setbudget" class="small">Set</button>
+        </div>
+      </div>
+    </div>
   </section>
   <div id="sections"></div>
+  <section>
+    <h2>Add plugins</h2>
+    <div class="addbar">
+      <input id="pq" placeholder="lookup plugins by keyword (memory, git, market…)" autocomplete="off">
+      <button id="psearch" class="small">Search</button>
+    </div>
+    <div id="presults" class="empty">searching the opencode plugin registry…</div>
+  </section>
 </main>
 <footer>
   <div class="bar">
@@ -301,6 +390,10 @@ function status(msg, kind) {
   el.textContent = msg;
   el.className = kind || "";
 }
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 function pending() {
   const out = [];
   for (const [key, row] of current) {
@@ -321,8 +414,6 @@ function toggleRow(key, enabled) {
   refreshApply();
 }
 function rowHtml(row) {
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const locked = row.locked ? " disabled" : "";
   const checked = row.enabled ? " checked" : "";
   return '<div class="row">' +
@@ -353,12 +444,79 @@ function render() {
   });
   refreshApply();
 }
+function paintDonut(used, budget) {
+  const ratio = budget > 0 ? used / budget : 0;
+  const over = ratio > 1;
+  const deg = Math.max(0, Math.min(ratio, 1)) * 360;
+  document.getElementById("donut").style.background = "conic-gradient(" +
+    (over ? "var(--err)" : "var(--accent)") + " 0deg " + deg + "deg, #2a2a33 " + deg + "deg 360deg)";
+  document.getElementById("pct").textContent = Math.round(ratio * 100) + "%";
+}
 async function loadStats() {
   try {
-    const { text } = await getJson("/api/usage");
-    document.getElementById("stats").textContent = text || "(no usage recorded yet)";
+    const u = await getJson("/api/usage");
+    document.getElementById("stats").textContent = u.text || "(no usage recorded yet)";
+    if (document.activeElement !== document.getElementById("budget")) {
+      document.getElementById("budget").value = u.budget;
+    }
+    paintDonut((u.today && u.today.tokens) || 0, u.budget);
   } catch (error) {
     document.getElementById("stats").textContent = String(error.message || error);
+  }
+}
+async function setBudget() {
+  try {
+    const res = await postJson("/api/budget", { budget: Number(document.getElementById("budget").value) });
+    status("daily budget set to " + res.budget.toLocaleString("en-US") + " tokens", "ok");
+    await loadStats();
+  } catch (error) {
+    status(String(error.message || error), "err");
+  }
+}
+function isInstalled(name) {
+  for (const row of current.values()) {
+    if (row.id === name || row.label === name) return true;
+  }
+  return false;
+}
+async function searchPlugins() {
+  const q = document.getElementById("pq").value.trim();
+  const host = document.getElementById("presults");
+  host.textContent = "looking up “" + q + "”…";
+  try {
+    const { results } = await getJson("/api/discover?q=" + encodeURIComponent(q));
+    if (!results || !results.length) {
+      host.textContent = "no plugins found for “" + q + "”";
+      return;
+    }
+    host.innerHTML = results.map((r) =>
+      '<div class="result"><div class="txt"><div class="name">' + esc(r.name) + "</div>" +
+      '<div class="desc">' + esc(r.description || "") + "</div>" +
+      (r.date ? '<div class="meta">updated ' + esc(String(r.date).slice(0, 10)) + "</div>" : "") +
+      "</div>" +
+      '<button class="small" data-pkg="' + esc(r.name) + '"' + (isInstalled(r.name) ? " disabled" : "") + ">" +
+      (isInstalled(r.name) ? "Installed" : "Add") + "</button></div>").join("");
+    host.querySelectorAll("button[data-pkg]").forEach((btn) => {
+      btn.addEventListener("click", () => void addPackage(btn.dataset.pkg, btn));
+    });
+  } catch (error) {
+    host.textContent = String(error.message || error);
+  }
+}
+async function addPackage(name, btn) {
+  if (!name) return;
+  btn.disabled = true;
+  status("adding " + name + "…", "");
+  try {
+    const res = await postJson("/api/plugins", { add: [name] });
+    if (res.errors && res.errors.length) status(res.errors.join(" · "), "err");
+    else if (res.skipped && res.skipped.length) status(name + " already declared in " + (res.file || "config"), "ok");
+    else status(name + " added to " + (res.file || "config") + " · hot-reload picks it up", "ok");
+    await load();
+    await searchPlugins();
+  } catch (error) {
+    status(String(error.message || error), "err");
+    btn.disabled = false;
   }
 }
 async function load() {
@@ -412,9 +570,22 @@ function isPluginKey(key) {
   return pluginKeys.has(key);
 }
 document.getElementById("apply").addEventListener("click", () => void apply());
+document.getElementById("setbudget").addEventListener("click", () => void setBudget());
+document.getElementById("psearch").addEventListener("click", () => void searchPlugins());
+document.getElementById("pq").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") void searchPlugins();
+});
+let searchTimer = 0;
+document.getElementById("pq").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => void searchPlugins(), 450);
+});
+// Usage numbers tick server-side every 5 minutes; re-read here so an open
+// page never goes stale (and the donut follows).
+setInterval(() => void loadStats(), 60_000);
 (async () => {
   await loadPluginKeys();
-  await Promise.all([load(), loadStats()]);
+  await Promise.all([load(), loadStats(), searchPlugins()]);
 })();
 </script>
 </body>

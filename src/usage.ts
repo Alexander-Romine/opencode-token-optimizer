@@ -15,8 +15,11 @@ import type { StorageLike } from "./meter"
 import type { SessionSnapshot } from "./state"
 
 const STATE_KEY = "usage/v1"
+const BUDGET_KEY = "usage/budget"
 const KEEP_DAYS = 8
 const WEEK_DAYS = 7
+/** Daily budget used until the user sets their own (tokens). */
+export const DEFAULT_BUDGET = 250_000
 
 interface Totals {
   input: number
@@ -40,6 +43,37 @@ export interface WindowTotals extends Totals {
 export interface UsageWindows {
   today: WindowTotals
   week: WindowTotals
+}
+
+/** What the localhost page renders: text lines + donut numbers. */
+export interface UsageSnapshot {
+  text: string
+  today: WindowTotals
+  week: WindowTotals
+  /** User-set daily token budget (donut denominator). */
+  budget: number
+}
+
+/** The daily budget; missing/invalid storage falls back to the default. */
+export async function getBudget(storage: StorageLike): Promise<number> {
+  try {
+    const raw = await storage.get(BUDGET_KEY)
+    const n = Number(raw)
+    if (Number.isFinite(n) && n >= 1000 && n <= 100_000_000) return Math.floor(n)
+  } catch {
+    // Fall through to the default.
+  }
+  return DEFAULT_BUDGET
+}
+
+/** Validates and stores the daily budget; rejects nonsense values. */
+export async function setBudget(storage: StorageLike, value: unknown): Promise<number> {
+  const n = Math.floor(Number(value))
+  if (!Number.isFinite(n) || n < 1000 || n > 100_000_000) {
+    throw new Error("daily budget must be 1,000 - 100,000,000 tokens")
+  }
+  await storage.set(BUDGET_KEY, n)
+  return n
 }
 
 function emptyTotals(): Totals {

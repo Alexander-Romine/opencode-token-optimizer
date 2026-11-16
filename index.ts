@@ -32,7 +32,8 @@ import { TokenOptimizer, type PluginChange, type OptionChange } from "./src/rpc"
 import { createPluginmgr, type PluginInfoLike } from "./src/pluginmgr"
 import { createOptmgr } from "./src/optmgr"
 import { startPanel, type Panel } from "./src/panel"
-import { formatUsageWindows, updateUsage } from "./src/usage"
+import { formatUsageWindows, updateUsage, getBudget, setBudget, type UsageSnapshot } from "./src/usage"
+import { searchPlugins } from "./src/discover"
 import { ToolOptimizer } from "./src/tools"
 import { nativeAvailable, nativeDetail } from "./src/native"
 
@@ -188,6 +189,43 @@ export default Plugin.define({
     const optmgr = createOptmgr({ directory: ctx.location.directory })
 
     /* ---------------------------------------------------------------- *
+     * Rolling usage: snapshot for the panel + a slow background tick
+     * ---------------------------------------------------------------- */
+
+    /**
+     * One ledger pass over the live session snapshots. The page reads this
+     * too, but the ledger also ticks on a timer below - otherwise daily
+     * buckets only fill when someone happens to open the panel, and
+     * "today" would read 0 after a restart.
+     */
+    async function usageSnapshot(): Promise<UsageSnapshot> {
+      try {
+        const page = await ctx.session.list({ directory: ctx.location.directory, limit: 100 })
+        const sessions = (Array.isArray(page.data) ? page.data : []) as SessionSnapshot[]
+        const windows = await updateUsage(ctx.storage, sessions)
+        const budget = await getBudget(ctx.storage)
+        return { text: formatUsageWindows(windows), today: windows.today, week: windows.week, budget }
+      } catch (error) {
+        console.error("[token-optimizer] usage ledger failed:", error)
+        const budget = await getBudget(ctx.storage).catch(() => 250_000)
+        return {
+          text: "usage unavailable: " + (error instanceof Error ? error.message : String(error)),
+          today: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0 },
+          week: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tokens: 0 },
+          budget,
+        }
+      }
+    }
+
+    // Baseline at startup, then attribute growth every 5 minutes so buckets
+    // fill without the panel ever being opened. unref: never holds the loop.
+    const usageTick = setInterval(() => {
+      void usageSnapshot().catch(() => undefined)
+    }, 5 * 60_000)
+    usageTick.unref()
+    void usageSnapshot().catch(() => undefined)
+
+    /* ---------------------------------------------------------------- *
      * Localhost toggle panel (Desktop's built-in browser, or any browser)
      * ---------------------------------------------------------------- */
 
@@ -198,16 +236,10 @@ export default Plugin.define({
         setOptions: (changes) => optmgr.set(changes),
         getPlugins: () => pluginmgr.list(),
         setPlugins: (changes) => pluginmgr.set(changes),
-        getUsage: async () => {
-          try {
-            const page = await ctx.session.list({ directory: ctx.location.directory, limit: 100 })
-            const sessions = (Array.isArray(page.data) ? page.data : []) as SessionSnapshot[]
-            return formatUsageWindows(await updateUsage(ctx.storage, sessions))
-          } catch (error) {
-            console.error("[token-optimizer] usage ledger failed:", error)
-            return "usage unavailable: " + (error instanceof Error ? error.message : String(error))
-          }
-        },
+        addPackages: (packages) => pluginmgr.add(packages),
+        discover: searchPlugins,
+        getUsage: usageSnapshot,
+        setBudget: async (budget) => ({ budget: await setBudget(ctx.storage, budget) }),
       })
       console.log(`[token-optimizer] toggle panel: ${panel.url}`)
     } catch (error) {
@@ -417,6 +449,7 @@ export default Plugin.define({
 
     return () => {
       eventLoop.abort()
+      clearInterval(usageTick)
       meter.dispose()
       optimizer.resetAll()
       void panel?.close().catch(() => undefined)

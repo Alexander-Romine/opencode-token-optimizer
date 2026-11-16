@@ -596,7 +596,18 @@ const panelDeps = {
   setOptions: (changes) => ({ rows: [], file: "", warnings: [], backups: [], errors: [], changes }),
   getPlugins: () => ({ rows: [], warnings: [], files: [] }),
   setPlugins: (changes) => ({ rows: [], warnings: [], files: [], backups: [], errors: [], changes }),
-  getUsage: () => "today     : 42 tokens\nlast 7 days: 42 tokens",
+  addPackages: (packages) => ({ added: packages, skipped: [], errors: [], backups: [], file: "C:/cfg/opencode.json" }),
+  discover: (q) => [{ name: `opencode-${q || "all"}`, description: "demo plugin", date: "2026-01-01" }],
+  getUsage: () => ({
+    text: "today     : 42 tokens\nlast 7 days: 42 tokens",
+    today: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, tokens: 42 },
+    week: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, tokens: 42 },
+    budget: 250_000,
+  }),
+  setBudget: (budget) => {
+    if (!Number.isFinite(budget) || budget < 1000) throw new Error("daily budget must be 1,000 - 100,000,000 tokens")
+    return { budget }
+  },
 }
 const panel = await startPanel({ ...panelDeps, port: 0 })
 check("panel: serves the toggle page", (await (await fetch(panel.url)).text()).includes("token-optimizer"))
@@ -605,7 +616,27 @@ check(
   (await (await fetch(`${panel.url}api/health`)).json()).marker === "token-optimizer-panel-v1",
 )
 const pUsage = await (await fetch(`${panel.url}api/usage`)).json()
-check("panel: usage endpoint returns the two lines", pUsage.text.includes("today") && pUsage.text.includes("last 7 days"))
+check(
+  "panel: usage endpoint is structured (text + donut numbers)",
+  pUsage.text.includes("today") && pUsage.text.includes("last 7 days") && pUsage.today.tokens === 42 && pUsage.budget === 250_000,
+  JSON.stringify(pUsage),
+)
+const pBudgetOk = await (
+  await fetch(`${panel.url}api/budget`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ budget: 500_000 }),
+  })
+).json()
+check("panel: budget POST accepts a sane value", pBudgetOk.budget === 500_000, JSON.stringify(pBudgetOk))
+const pBudgetBad = await fetch(`${panel.url}api/budget`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ budget: 5 }),
+})
+check("panel: budget POST rejects nonsense with 400", pBudgetBad.status === 400, String(pBudgetBad.status))
+const pDiscover = await (await fetch(`${panel.url}api/discover?q=memory`)).json()
+check("panel: discover returns lookup results", pDiscover.results?.[0]?.name === "opencode-memory", JSON.stringify(pDiscover))
 const pOpts = await (await fetch(`${panel.url}api/options`)).json()
 check("panel: options GET returns rows", pOpts.rows?.length === 1 && pOpts.rows[0].key === "rtk")
 const pPost = await (
@@ -618,13 +649,21 @@ const pPost = await (
 check("panel: options POST applies changes", pPost.changes?.length === 1 && pPost.errors?.length === 0)
 const pPlug = await (await fetch(`${panel.url}api/plugins`)).json()
 check("panel: plugins GET returns rows", Array.isArray(pPlug.rows))
+const pAdd = await (
+  await fetch(`${panel.url}api/plugins`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ add: ["opencode-fresh-thing"] }),
+  })
+).json()
+check("panel: plugins POST {add} runs the add pipeline", pAdd.added?.[0] === "opencode-fresh-thing" && pAdd.file, JSON.stringify(pAdd))
 await panel.close()
 const afterClose = await fetch(panel.url).catch(() => null)
 check("panel: close stops the server", afterClose === null)
 
 // ---- rolling usage ledger (today / last 7 days) ----
 
-import { updateUsage, formatUsageWindows } from "../src/usage.ts"
+import { updateUsage, formatUsageWindows, getBudget, setBudget, DEFAULT_BUDGET } from "../src/usage.ts"
 
 const usageMem = new Map()
 const usageStorage = {
@@ -644,6 +683,67 @@ check(
   "usage: formatted as two labeled lines",
   usageText.includes("today") && usageText.includes("last 7 days") && usageText.split("\n").length === 2,
 )
+
+// ---- daily budget (donut denominator) ----
+
+check("budget: unset falls back to the default", (await getBudget(usageStorage)) === DEFAULT_BUDGET)
+check("budget: set + read roundtrip", (await setBudget(usageStorage, 500_000)) === 500_000 && (await getBudget(usageStorage)) === 500_000)
+let budgetRejected = false
+try {
+  await setBudget(usageStorage, 10)
+} catch {
+  budgetRejected = true
+}
+check("budget: nonsense value rejected", budgetRejected && (await getBudget(usageStorage)) === 500_000)
+
+// ---- pluginmgr.add: panel "Add plugins" ----
+
+const addTmp = fs.mkdtempSync(path.join(os.tmpdir(), "tokenopt-add-"))
+const addGlobal = path.join(addTmp, "global")
+const addProj = path.join(addTmp, "project")
+fs.mkdirSync(addGlobal, { recursive: true })
+fs.mkdirSync(addProj, { recursive: true })
+const addFile = path.join(addGlobal, "opencode.json")
+fs.writeFileSync(addFile, `${JSON.stringify({ model: "x", plugins: ["opencode-history-search"] }, null, 2)}\n`)
+const addMgr = createPluginmgr({
+  directory: addProj,
+  globalDir: addGlobal,
+  list: async () => [],
+  storage: { get: async () => undefined, set: async () => {} },
+})
+let addRes = await addMgr.add(["opencode-history-search", "opencode-new-addon"])
+check(
+  "add: new package appended, declared one skipped",
+  addRes.added.length === 1 && addRes.added[0] === "opencode-new-addon" &&
+    addRes.skipped.includes("opencode-history-search") && addRes.errors.length === 0,
+  JSON.stringify(addRes),
+)
+const addWritten = JSON.parse(fs.readFileSync(addFile, "utf8"))
+check(
+  "add: backup written, global file merged (not overwritten)",
+  addRes.backups.length === 1 && fs.existsSync(addRes.backups[0]) &&
+    addWritten.plugins.includes("opencode-new-addon") && addWritten.model === "x",
+  JSON.stringify(addRes),
+)
+addRes = await addMgr.add(["opencode-new-addon"])
+check("add: second add is a no-op", addRes.added.length === 0 && addRes.skipped.length === 1 && addRes.errors.length === 0, JSON.stringify(addRes))
+addRes = await addMgr.add(["-bad name", "no spaces"])
+check("add: invalid names rejected", addRes.errors.length === 2 && addRes.added.length === 0, addRes.errors.join(" | "))
+
+const addFresh = createPluginmgr({
+  directory: addProj,
+  globalDir: path.join(addTmp, "fresh-global"),
+  list: async () => [],
+  storage: { get: async () => undefined, set: async () => {} },
+})
+addRes = await addFresh.add(["opencode-fresh"])
+check(
+  "add: creates the global config when none exists",
+  addRes.added.length === 1 && addRes.backups.length === 0 &&
+    JSON.parse(fs.readFileSync(path.join(addTmp, "fresh-global", "opencode.json"), "utf8")).plugins.includes("opencode-fresh"),
+  JSON.stringify(addRes),
+)
+fs.rmSync(addTmp, { recursive: true, force: true })
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)
